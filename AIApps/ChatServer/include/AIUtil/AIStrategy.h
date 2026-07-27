@@ -10,11 +10,14 @@
 
 
 
+/**
+ * AIStrategy - 策略模式基类
+ * 定义多模型厂商的统一调用接口，子类各自实现请求构建与响应解析
+ */
 class AIStrategy {
 public:
     virtual ~AIStrategy() = default;
 
-    
     virtual std::string getApiUrl() const = 0;
 
     // API Key
@@ -33,6 +36,7 @@ public:
 
 };
 
+// 阿里百炼策略：对接通义千问 qwen-plus
 class AliyunStrategy : public AIStrategy {
 
 public:
@@ -54,6 +58,7 @@ private:
     std::string apiKey_;
 };
 
+// 豆包策略：对接火山引擎 doubao-seed 思考模型（上下文 128K）
 class DouBaoStrategy : public AIStrategy {
 
 public:
@@ -74,6 +79,7 @@ private:
     std::string apiKey_;
 };
 
+// 阿里百炼 RAG 策略：对接百炼应用 API，支持知识库检索增强
 class AliyunRAGStrategy : public AIStrategy {
 
 public:
@@ -95,6 +101,7 @@ private:
     std::string apiKey_;
 };
 
+// 阿里百炼 MCP 策略：支持工具调用，走两段式推理流程
 class AliyunMcpStrategy : public AIStrategy {
 
 public:
