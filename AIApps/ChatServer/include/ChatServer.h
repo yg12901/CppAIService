@@ -40,6 +40,10 @@ class ChatCreateAndSendHandler;
 class ChatSessionsHandler;
 class ChatSpeechHandler;
 
+/**
+ * ChatServer - AI Agent 平台核心服务类
+ * 基于 muduo 网络库构建，集成多模型对话、图像识别、语音合成与异步消息队列
+ */
 class ChatServer {
 public:
 	ChatServer(int port,
@@ -91,19 +95,20 @@ private:
 
 	http::MysqlUtil		mysqlUtil_;
 
+	// 在线用户状态：userId -> isOnline，用于防止重复登录
 	std::unordered_map<int, bool>	onlineUsers_;
 	std::mutex	mutexForOnlineUsers_;
 
-	
-
-	// std::unordered_map<int, std::shared_ptr<AIHelper>> chatInformation;
-
+	// 多租户会话管理：userId -> (sessionId -> AIHelper)
+	// 二级嵌套 map 实现单用户多会话隔离
 	std::unordered_map<int, std::unordered_map<std::string,std::shared_ptr<AIHelper> > > chatInformation;
 	std::mutex	mutexForChatInformation;
 
+	// 图像识别器映射：userId -> ImageRecognizer，每用户独立实例
 	std::unordered_map<int, std::shared_ptr<ImageRecognizer> > ImageRecognizerMap;
 	std::mutex	mutexForImageRecognizerMap;
 
+	// 会话 ID 列表：userId -> [sessionId1, sessionId2, ...]
 	std::unordered_map<int,std::vector<std::string> > sessionsIdsMap;
 	std::mutex mutexForSessionsId;
 
