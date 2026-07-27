@@ -1,5 +1,9 @@
 #include"../include/AIUtil/AIConfig.h"
 
+/**
+ * AIConfig - MCP Prompt 模板管理
+ * 从 config.json 加载出题模板和工具清单，提供 buildPrompt 和 parseAIResponse 方法
+ */
 bool AIConfig::loadFromFile(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open()) {
