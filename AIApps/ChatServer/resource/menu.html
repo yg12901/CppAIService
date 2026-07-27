@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>欢迎来到AI助手界面</title>
+    <style>
+        
+        body {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: "Microsoft YaHei", Arial, sans-serif;
+            color: #fff;
+            overflow: hidden;
+            background: radial-gradient(ellipse at bottom, #1b2735 0%, #090a0f 100%);
+        }
+
+        
+        .stars {
+            width: 2px;
+            height: 2px;
+            background: white;
+            border-radius: 50%;
+            position: absolute;
+            animation: twinkling 3s infinite ease-in-out;
+        }
+
+        @keyframes twinkling {
+            0%, 100% { opacity: 0.2; }
+            50% { opacity: 1; }
+        }
+
+        
+        #loading-container {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            text-align: center;
+        }
+
+        
+        #loading-title {
+            font-size: 2.5em;
+            margin-bottom: 30px;
+            color: #00c3ff;
+            text-shadow: 0 0 10px #00c3ff, 0 0 20px #008bff, 0 0 30px #00e1ff;
+            letter-spacing: 3px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { text-shadow: 0 0 10px #00c3ff, 0 0 20px #008bff; }
+            50% { text-shadow: 0 0 20px #00e1ff, 0 0 40px #00ffff; }
+        }
+
+        
+        .progress-bar {
+            width: 320px;
+            height: 22px;
+            background: #222;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 0 15px #00c3ff;
+        }
+
+        .progress-bar-inner {
+            height: 100%;
+            background: linear-gradient(90deg, #00c3ff, #00e1ff, #00fff7);
+            width: 0;
+            transition: width 0.3s ease;
+        }
+
+        
+        #loading-text {
+            margin-top: 20px;
+            font-size: 1.2em;
+            color: #ccc;
+        }
+
+        
+        #menu-container {
+            display: none;
+            text-align: center;
+            padding: 60px 20px;
+            animation: fadeIn 1s ease forwards;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        h1 {
+            font-size: 2.8em;
+            margin-bottom: 30px;
+            color: #00e1ff;
+            text-shadow: 0 0 15px #00c3ff, 0 0 30px #008bff;
+        }
+
+        .menu-option {
+            margin: 15px 0;
+            font-size: 1.6em;
+            padding: 12px 25px;
+            border-radius: 10px;
+            display: inline-block;
+            background: rgba(0, 195, 255, 0.1);
+            border: 1px solid #00c3ff;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 8px #00c3ff;
+        }
+
+        .menu-option:hover {
+            background: rgba(0, 225, 255, 0.2);
+            color: #00ffff;
+            text-shadow: 0 0 10px #00e1ff;
+            transform: scale(1.05);
+            box-shadow: 0 0 15px #00e1ff;
+        }
+
+        .menu-border {
+            margin: 20px auto;
+            width: 85%;
+            height: 2px;
+            background: #00c3ff;
+            box-shadow: 0 0 10px #00c3ff;
+        }
+    </style>
+</head>
+
+<body>
+    
+    <script>
+        for (let i = 0; i < 80; i++) {
+            let star = document.createElement("div");
+            star.className = "stars";
+            star.style.top = Math.random() * window.innerHeight + "px";
+            star.style.left = Math.random() * window.innerWidth + "px";
+            star.style.animationDuration = 2 + Math.random() * 3 + "s";
+            document.body.appendChild(star);
+        }
+    </script>
+
+    
+    <div id="loading-container">
+        <div id="loading-title">AI 助手 启动中...</div>
+        <div class="progress-bar">
+            <div class="progress-bar-inner"></div>
+        </div>
+        <div id="loading-text">系统正在初始化，请稍候...</div>
+    </div>
+
+    
+    <div id="menu-container">
+        <h1>✨ 欢迎来到 AI 助手 ✨</h1>
+        <div class="menu-border"></div>
+        <div class="menu-option" id="chat-service">[1] 进入 AI 聊天助手</div>
+        <div class="menu-option" id="image-service">[2] 进入 AI 图像识别助手</div>
+        <div class="menu-option" id="logout">[0] 退出登录</div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const progressBar = document.querySelector('.progress-bar-inner');
+            const loadingContainer = document.getElementById('loading-container');
+            const menuContainer = document.getElementById('menu-container');
+
+            
+            let percent = 0;
+            let interval = setInterval(() => {
+                percent += 10;
+                progressBar.style.width = percent + "%";
+                if (percent >= 100) {
+                    clearInterval(interval);
+                    setTimeout(() => {
+                        loadingContainer.style.display = 'none';
+                        menuContainer.style.display = 'block';
+                    }, 300);
+                }
+            }, 200);
+        });
+
+        // 进入AI服务
+        function loadService(path, errorMsg) {
+            fetch(path, { method: 'GET', headers: { 'Accept': 'text/html' } })
+                .then(res => res.text())
+                .then(html => { document.open(); document.write(html); document.close(); })
+                .catch(() => alert(errorMsg));
+        }
+
+        document.getElementById('chat-service').addEventListener('click', () => loadService('/chat', '进入AI聊天服务异常！'));
+        document.getElementById('image-service').addEventListener('click', () => loadService('/upload', '进入AI图像识别服务异常！'));
+        document.getElementById('logout').addEventListener('click', () => {
+            const userId = sessionStorage.getItem('userId');
+            fetch('/user/logout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: userId, type: 'manual', gameType: 0 })
+            })
+                .then(res => {
+                    if (!res.ok) throw new Error('Logout failed');
+                    return fetch('/', { method: 'GET', headers: { 'Accept': 'text/html' } });
+                })
+                .then(res => res.text())
+                .then(html => {
+                    sessionStorage.clear();
+                    document.open();
+                    document.write(html);
+                    document.close();
+                })
+                .catch(() => alert('退出登录失败！'));
+        });
+
+        // 页面刷新/关闭时自动登出
+        window.addEventListener('beforeunload', function () {
+            const userId = sessionStorage.getItem('userId');
+            if (userId) {
+                const data = new Blob([JSON.stringify({ userId: userId, type: 'refresh', gameType: 0 })],
+                    { type: 'application/json' });
+                navigator.sendBeacon('/user/logout', data);
+            }
+        });
+
+        // 页面加载时用户检查
+        window.addEventListener('load', function () {
+            const userId = sessionStorage.getItem('userId');
+            if (!userId) {
+                window.location.href = '/entry';
+            }
+        });
+    </script>
+</body>
+</html>
