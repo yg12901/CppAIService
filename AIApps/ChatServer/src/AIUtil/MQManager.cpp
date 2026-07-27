@@ -1,5 +1,9 @@
 #include"../include/AIUtil/MQManager.h"
 
+/**
+ * MQManager - RabbitMQ 连接池（单例模式）
+ * 5 个连接 + 原子轮询，多线程 publish 避免单连接热点
+ */
 // ------------------- MQManager -------------------
 MQManager::MQManager(size_t poolSize)
     : poolSize_(poolSize), counter_(0) {
@@ -13,6 +17,7 @@ MQManager::MQManager(size_t poolSize)
 }
 
 void MQManager::publish(const std::string& queue, const std::string& msg) {
+    // 原子计数器轮询，5 个连接均摊负载
     size_t index = counter_.fetch_add(1) % poolSize_;
     auto& conn = pool_[index];
 
