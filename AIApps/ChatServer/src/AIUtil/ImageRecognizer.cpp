@@ -1,5 +1,10 @@
 #include "../include/AIUtil/ImageRecognizer.h"
 
+/**
+ * ImageRecognizer - 基于 ONNX Runtime 的图像分类器
+ * 部署 MobileNetV2 轻量级模型，端到端推理：
+ *   数据预处理（resize + 归一化 + NCHW） → 推理调用 → 结果解析（argmax）
+ */
 ImageRecognizer::ImageRecognizer(const std::string& model_path,
     const std::string& label_path)
     : env(ORT_LOGGING_LEVEL_WARNING, "ImageRecognizer")
