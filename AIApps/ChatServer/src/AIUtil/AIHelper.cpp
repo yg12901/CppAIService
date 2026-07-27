@@ -4,6 +4,7 @@
 #include<chrono>
 
 // 构造函数
+// 默认使用阿里云通义千问大模型（modelType="1"）
 AIHelper::AIHelper() {
     //默认使用阿里云大模型
     strategy = StrategyFactory::instance().create("1");
@@ -19,7 +20,8 @@ void AIHelper::setStrategy(std::shared_ptr<AIStrategy> strat) {
   //  model_ = modelName;
 //}
 
-// 添加一条用户消息
+// 添加消息到对话历史
+// 两步操作：同步写入内存 messages 向量 + 异步推送到 RabbitMQ 等待落库
 void AIHelper::addMessage(int userId,const std::string& userName, bool is_user,const std::string& userInput, std::string sessionId) {
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
@@ -34,7 +36,8 @@ void AIHelper::restoreMessage(const std::string& userInput,long long ms) {
 }
 
 
-// 发送聊天消息
+// 核心聊天方法
+// 按 modelType 动态切换策略，非 MCP 模式走单次调用，MCP 模式走两段式推理
 std::string AIHelper::chat(int userId,std::string userName, std::string sessionId, std::string userQuestion, std::string modelType) {
 
     //设置策略
