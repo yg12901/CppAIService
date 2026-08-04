@@ -12,6 +12,8 @@
 
 #include"AIStrategy.h"
 
+// 工厂模式单例 + 模板注册器
+// creators hash 表存储"模型名 -> 造函数"映射，StrategyRegister<T> 实现启动时自动注册
 class StrategyFactory {
 
 public:
