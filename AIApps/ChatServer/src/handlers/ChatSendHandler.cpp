@@ -1,6 +1,8 @@
 #include "../include/handlers/ChatSendHandler.h"
 
 
+// 核心聊天接口 POST /chat/send
+// 鉴权后从 chatInformation 二级 map 查找或创建会话 AIHelper，调用 chat 方法获取 AI 回复
 void ChatSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     try
