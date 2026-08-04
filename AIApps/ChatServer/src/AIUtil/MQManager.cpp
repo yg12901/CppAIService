@@ -41,6 +41,8 @@ void RabbitMQThreadPool::shutdown() {
     }
 }
 
+// RabbitMQ 消费者工作线程
+// 独立 Channel 死循环消费，Qos(1) 保证公平分发，500ms 超时配合 stop_ 实现优雅退出
 void RabbitMQThreadPool::worker(int id) {
     try {
         // Each thread has its own independent channel
