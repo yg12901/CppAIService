@@ -14,7 +14,9 @@ SessionManager::SessionManager(std::unique_ptr<SessionStorage> storage)
     , rng_(std::random_device{}()) // 初始化随机数生成器，用于生成随机的会话ID
 {}
 
-// 从请求中获取或创建会话，也就是说，如果请求中包含会话ID，则从存储中加载会话，否则创建一个新的会话
+// 自研 Session 管理器
+// 从 HTTP 请求的 Cookie 中读取 sessionId，不存在或已过期则生成新的 32 位十六进制随机 ID
+// 每次 getSession 调用都会 refresh 续命 + save 存回 storage
 std::shared_ptr<Session> SessionManager::getSession(const HttpRequest& req, HttpResponse* resp)
 {   
     std::string sessionId = getSessionIdFromCookie(req);
