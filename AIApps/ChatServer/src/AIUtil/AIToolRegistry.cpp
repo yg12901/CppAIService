@@ -2,6 +2,8 @@
 #include <sstream>
 
 
+// MCP 工具注册表
+// 构造时注册内置工具（get_weather / get_time），通过 registerTool 开放接口扩展
 AIToolRegistry::AIToolRegistry() {
     registerTool("get_weather", getWeather);
     registerTool("get_time", getTime);
