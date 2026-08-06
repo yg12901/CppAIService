@@ -1,5 +1,7 @@
 #include "../include/handlers/ChatHistoryHandler.h"
 
+// 历史记录接口 POST /chat/history
+// 鉴权后从 chatInformation 查找会话 AIHelper，拷贝 messages 快照返回给前端
 void ChatHistoryHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     try
