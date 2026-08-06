@@ -1,6 +1,8 @@
 #include "../include/handlers/ChatCreateAndSendHandler.h"
 
 
+// 新建会话并发送 POST /chat/send-new-session
+// 使用 AISessionIdGenerator 生成唯一 sessionId，创建新 AIHelper 并返回 sessionId 给前端
 void ChatCreateAndSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     try

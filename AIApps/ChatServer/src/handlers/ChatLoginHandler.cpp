@@ -1,5 +1,7 @@
 #include "../include/handlers/ChatLoginHandler.h"
 
+// 登录接口 POST /login
+// 解析用户名密码 → MySQL 查询验证 → 创建 Session → setValue 写入 userId/isLoggedIn
 void ChatLoginHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     

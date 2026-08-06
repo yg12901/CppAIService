@@ -9,6 +9,11 @@ static size_t onWriteData(void* buffer, size_t size, size_t nmemb, void* userp) 
     return size * nmemb;
 }
 
+/**
+ * AISpeechProcessor - 百度语音 API 封装（TTS + ASR）
+ * TTS：create 提交任务 → query 轮询（最多 60 次/1s 间隔） → 返回 speech_url
+ * ASR：base64 音频 → 调百度 vop API → 解析返回文字
+ */
 std::string AISpeechProcessor::getAccessToken() {
     std::string result;
     CURL *curl = curl_easy_init();
