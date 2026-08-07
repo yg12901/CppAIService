@@ -1,6 +1,9 @@
 #include"../include/AIUtil/AIStrategy.h"
 #include"../include/AIUtil/AIFactory.h"
 
+// 4 个策略实现：阿里百炼(qwen-plus) / 豆包(doubao-seed) / 阿里RAG(嵌套 JSON) / 阿里MCP(工具调用)
+// 底部 4 个 static StrategyRegister 在程序启动时自动注册到工厂
+
 std::string AliyunStrategy::getApiUrl() const {
     return "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 }
