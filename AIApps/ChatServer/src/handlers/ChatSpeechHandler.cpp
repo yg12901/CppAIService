@@ -1,6 +1,8 @@
 #include "../include/handlers/ChatSpeechHandler.h"
 
 
+// 语音合成接口 POST /chat/tts
+// 调用 AISpeechProcessor::synthesize 走百度 TTS create → query 两步流程，返回 MP3 URL
 void ChatSpeechHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     try
