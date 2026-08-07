@@ -1,5 +1,7 @@
 #include "../include/handlers/ChatLogoutHandler.h"
 
+// 登出接口 POST /user/logout
+// clear 会话内容 → destroySession 从 storage 删除 → erase onlineUsers_ 释放登录态
 void ChatLogoutHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     auto contentType = req.getHeader("Content-Type");
