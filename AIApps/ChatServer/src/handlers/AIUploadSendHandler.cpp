@@ -1,6 +1,8 @@
 #include "../include/handlers/AIUploadSendHandler.h"
 
 
+// 图像识别接口 POST /upload/send
+// base64 解码图片 → 按 userId 查找或创建 ImageRecognizer → PredictFromBuffer 推理
 void AIUploadSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     try
