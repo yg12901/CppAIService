@@ -50,6 +50,8 @@ void ChatServer::initChatMessage() {
     std::cout << "initChatMessage success ! " << std::endl;
 }
 
+// 从 MySQL 恢复历史聊天记录
+// 按 ts 时间戳升序读取 chat_message 表，重建 chatInformation 二级 map 与 AIHelper
 void ChatServer::readDataFromMySQL() {
 
 
