@@ -18,6 +18,8 @@ void executeMysql(const std::string sql) {
 }
 
 
+// 程序入口
+// 创建 ChatServer → 4 工作线程 → 从 MySQL 恢复历史 → 启动 RabbitMQ 线程池 → 进入事件循环
 int main(int argc, char* argv[]) {
 	LOG_INFO << "pid = " << getpid();
 	std::string serverName = "ChatServer";
