@@ -2,6 +2,8 @@
 
 
 
+// 入口页面 GET / 和 GET /entry
+// 读取 entry.html 静态文件，设置 Content-Type:text/html 直接返回
 void ChatEntryHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
 
