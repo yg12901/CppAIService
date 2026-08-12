@@ -1,6 +1,8 @@
 
 #include "../include/handlers/ChatHandler.h"
 
+// 聊天页面 GET /chat
+// 读取 AI.html 并在 </head> 前注入 userId 变量，前端 JS 可直接使用登录用户信息
 void ChatHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
 
