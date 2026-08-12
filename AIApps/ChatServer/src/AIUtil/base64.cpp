@@ -32,6 +32,7 @@
 */
 
 #include "../include/AIUtil/base64.h"
+// Base64 编解码工具：图像识别上传、语音数据传输均依赖此模块
 
 #include <algorithm>
 #include <stdexcept>
