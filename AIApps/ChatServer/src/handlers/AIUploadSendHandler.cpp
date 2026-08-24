@@ -25,6 +25,20 @@ void AIUploadSendHandler::handle(const http::HttpRequest& req, http::HttpRespons
         }
 
         int userId = std::stoi(session->getValue("userId"));
+
+        // 功能权限校验：canImage=false 的用户禁止使用图像识别（fail-closed）
+        if (session->getValue("canImage") != "true") {
+            json errorResp;
+            errorResp["status"] = "error";
+            errorResp["message"] = "image recognition not permitted for your account";
+            std::string errorBody = errorResp.dump(4);
+
+            server_->packageResp(req.getVersion(), http::HttpResponse::k403Forbidden,
+                "Forbidden", true, "application/json", errorBody.size(),
+                errorBody, resp);
+            return;
+        }
+
         std::shared_ptr<ImageRecognizer> ImageRecognizerPtr;
         {
             std::lock_guard<std::mutex> lock(server_->mutexForImageRecognizerMap);

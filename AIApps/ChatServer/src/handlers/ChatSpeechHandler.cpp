@@ -27,6 +27,19 @@ void ChatSpeechHandler::handle(const http::HttpRequest& req, http::HttpResponse*
         int userId = std::stoi(session->getValue("userId"));
         std::string username = session->getValue("username");
 
+        // 功能权限校验：canTts=false 的用户禁止使用语音合成（fail-closed）
+        if (session->getValue("canTts") != "true") {
+            json errorResp;
+            errorResp["status"] = "error";
+            errorResp["message"] = "tts not permitted for your account";
+            std::string errorBody = errorResp.dump(4);
+
+            server_->packageResp(req.getVersion(), http::HttpResponse::k403Forbidden,
+                "Forbidden", true, "application/json", errorBody.size(),
+                errorBody, resp);
+            return;
+        }
+
 
         std::string text;
 

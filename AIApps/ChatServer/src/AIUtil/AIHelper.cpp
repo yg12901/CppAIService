@@ -40,6 +40,11 @@ void AIHelper::restoreMessage(const std::string& userInput,long long ms) {
 // 按 modelType 动态切换策略，非 MCP 模式走单次调用，MCP 模式走两段式推理
 std::string AIHelper::chat(int userId,std::string userName, std::string sessionId, std::string userQuestion, std::string modelType) {
 
+    // 记录本轮模型标识，清零用量统计（MCP 两段式会在 executeCurl 里累加）
+    m_curModel = modelType;
+    m_lastPromptTokens = 0;
+    m_lastCompletionTokens = 0;
+
     //设置策略
     setStrategy(StrategyFactory::instance().create(modelType));
 
@@ -137,7 +142,10 @@ json AIHelper::executeCurl(const json& payload) {
         throw std::runtime_error("Failed to initialize curl");
     }
 
-    std::cout<<"test "<< strategy->getApiUrl().c_str()<<' '<< strategy->getApiKey()<<std::endl;
+    // 日志严禁打印 key 明文，仅打印前 6 位 + "..."
+    std::string maskedKey = strategy->getApiKey();
+    if (maskedKey.size() > 6) maskedKey = maskedKey.substr(0, 6) + "...";
+    std::cout << "test " << strategy->getApiUrl() << ' ' << maskedKey << std::endl;
 
     std::string readBuffer;
     struct curl_slist* headers = nullptr;
@@ -164,7 +172,14 @@ json AIHelper::executeCurl(const json& payload) {
     }
 
     try {
-        return json::parse(readBuffer);
+        json response = json::parse(readBuffer);
+
+        // 解析 LLM 用量（usage 字段），MCP 两段式会自动累加两段消耗
+        if (response.contains("usage")) {
+            m_lastPromptTokens += response["usage"].value("prompt_tokens", 0);
+            m_lastCompletionTokens += response["usage"].value("completion_tokens", 0);
+        }
+        return response;
     }
     catch (...) {
         throw std::runtime_error("Failed to parse JSON response: " + readBuffer);
@@ -207,13 +222,21 @@ void AIHelper::pushMessageToMysql(int userId, const std::string& userName, bool 
     std::string safeUserName = escapeString(userName);
     std::string safeUserInput = escapeString(userInput);
 
-    std::string sql = "INSERT INTO chat_message (id, username, session_id, is_user, content, ts) VALUES ("
+    // 用量列：仅 AI 回复行（is_user=0）携带本轮 token 消耗，用户消息行填 0
+    int promptTokens     = is_user ? 0 : m_lastPromptTokens;
+    int completionTokens = is_user ? 0 : m_lastCompletionTokens;
+
+    std::string sql = "INSERT INTO chat_message "
+        "(id, username, session_id, is_user, content, ts, model, prompt_tokens, completion_tokens) VALUES ("
         + std::to_string(userId) + ", "
         + "'" + safeUserName + "', "
         + sessionId + ", "
         + std::to_string(is_user ? 1 : 0) + ", "
         + "'" + safeUserInput + "', "
-        + std::to_string(ms) + ")";
+        + std::to_string(ms) + ", "
+        + "'" + m_curModel + "', "
+        + std::to_string(promptTokens) + ", "
+        + std::to_string(completionTokens) + ")";
 
     //改成消息队列异步执行mysql操作，用于流量削峰与解耦逻辑
     //mysqlUtil_.executeUpdate(sql);

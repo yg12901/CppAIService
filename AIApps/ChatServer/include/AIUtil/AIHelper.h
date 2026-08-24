@@ -43,7 +43,7 @@ private:
     std::string escapeString(const std::string& input);
     //加入到mysql的接口（提供加入到线程池的接口，线程池做异步mysql更新操作）
     //todo: 
-    void pushMessageToMysql(int userId, const std::string& userName, bool is_user, const std::string& userInput, long long ms,std::string sessionId);
+    void pushMessageToMysql(int userId, const std::string& userName, bool is_user, const std::string& userInput, long long ms, std::string sessionId);
 
     // 内部方法：执行curl请求，返回原始JSON
     json executeCurl(const json& payload);
@@ -67,5 +67,9 @@ private:
     //后者代表时间戳
     std::vector<std::pair<std::string, long long>> messages;
 
-    //http::MysqlUtil mysqlUtil_;
+    // 用量统计：最近一次 chat 的 token 消耗（MCP 两段式会累加两段）
+    int m_lastPromptTokens = 0;
+    int m_lastCompletionTokens = 0;
+    // 当前 chat 使用的模型标识（入库用，用户消息行也记录）
+    std::string m_curModel;
 };

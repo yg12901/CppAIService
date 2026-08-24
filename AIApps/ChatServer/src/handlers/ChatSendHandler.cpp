@@ -41,6 +41,19 @@ void ChatSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* r
             modelType = j.contains("modelType") ? j["modelType"].get<std::string>() : "1";
         }
 
+        // 功能权限校验：canChat=false 的用户禁止使用 AI 对话（fail-closed，未登录刷新前一律拒绝）
+        if (session->getValue("canChat") != "true") {
+            json errorResp;
+            errorResp["status"] = "error";
+            errorResp["message"] = "chat not permitted for your account";
+            std::string errorBody = errorResp.dump(4);
+
+            server_->packageResp(req.getVersion(), http::HttpResponse::k403Forbidden,
+                "Forbidden", true, "application/json", errorBody.size(),
+                errorBody, resp);
+            return;
+        }
+
 
         std::shared_ptr<AIHelper> AIHelperPtr;
         {

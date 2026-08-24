@@ -1,4 +1,5 @@
 #include "../include/handlers/ChatLoginHandler.h"
+#include "../include/AIUtil/UserAuthDao.h"
 
 // 登录接口 POST /login
 // 解析用户名密码 → MySQL 查询验证 → 创建 Session → setValue 写入 userId/isLoggedIn
@@ -34,6 +35,15 @@ void ChatLoginHandler::handle(const http::HttpRequest& req, http::HttpResponse* 
             session->setValue("userId", std::to_string(userId));
             session->setValue("username", username);
             session->setValue("isLoggedIn", "true");
+            // 功能权限：登录时查一次写入会话，后续请求按功能鉴权
+            //（查不到 DB 异常时按最保守处理：全部置 false）
+            {
+                bool canChat = false, canImage = false, canTts = false;
+                UserAuthDao::GetUserPermissions(userId, canChat, canImage, canTts);
+                session->setValue("canChat",  canChat  ? "true" : "false");
+                session->setValue("canImage", canImage ? "true" : "false");
+                session->setValue("canTts",   canTts   ? "true" : "false");
+            }
             if (server_->onlineUsers_.find(userId) == server_->onlineUsers_.end() || server_->onlineUsers_[userId] == false)
             {
                 {
