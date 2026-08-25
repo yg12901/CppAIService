@@ -34,6 +34,10 @@ public:
 
     bool isMCPModel = false;
 
+    // 是否支持 SSE 流式输出（OpenAI 兼容 delta 格式）
+    // 默认 false；百炼/豆包/MCP 三家返回 true，RAG 接口格式不同本期不支持
+    virtual bool isStreamSupported() const { return false; }
+
 };
 
 // 阿里百炼策略：对接通义千问 qwen-plus
@@ -53,6 +57,8 @@ public:
 
     json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const override;
     std::string parseResponse(const json& response) const override;
+
+    bool isStreamSupported() const override { return true; }   // 百炼支持流式
 
 private:
     std::string apiKey_;
@@ -74,6 +80,8 @@ public:
 
     json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const override;
     std::string parseResponse(const json& response) const override;
+
+    bool isStreamSupported() const override { return true; }   // 豆包支持流式
 
 private:
     std::string apiKey_;
@@ -118,6 +126,8 @@ public:
 
     json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const override;
     std::string parseResponse(const json& response) const override;
+
+    bool isStreamSupported() const override { return true; }   // MCP 第二段可流式
 
 private:
     std::string apiKey_;

@@ -315,6 +315,91 @@
 
         function clearMessages() { chatContainer.innerHTML = ''; }
 
+        // 创建流式空气泡（打字机效果）：append 逐段追加纯文本，finalize 渲染 markdown
+        function appendStreamingMessage(role) {
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('message', role);
+            const bodyDiv = document.createElement('div');
+            bodyDiv.style.flex = '1';
+            bodyDiv.innerHTML = `<b>${role === 'user' ? '你' : 'AI'}:</b><br>`;
+            const textSpan = document.createElement('span');
+            bodyDiv.appendChild(textSpan);
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'display:flex;align-items:center;gap:10px;';
+            wrap.appendChild(bodyDiv);
+            msgDiv.appendChild(wrap);
+            chatContainer.appendChild(msgDiv);
+
+            let raw = '';
+            return {
+                append(delta) {
+                    raw += delta;
+                    textSpan.textContent = raw;   // 流式期间纯文本展示，防注入
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                },
+                finalize(finalText) {
+                    const content = (typeof finalText === 'string') ? finalText : raw;
+                    const safeHtml = DOMPurify.sanitize(marked.parse(content));
+                    const escapedContent = content.replace(/`/g, '\\`').replace(/\$/g, '\\$');
+                    msgDiv.innerHTML = `<div style="display:flex; align-items:center; gap:10px;"><div style="flex:1;"><b>${role === 'user' ? '你' : 'AI'}:</b><br>${safeHtml}</div><button class="tts-btn" onclick="playTTS(\`${escapedContent}\`)">🔊</button></div>`;
+                }
+            };
+        }
+
+        // SSE 流式请求：POST + ReadableStream 按事件解析（EventSource 不支持 POST）
+        // 返回 {stream:true, text} 或 {stream:false, data}（服务端降级为普通 JSON 时）
+        async function sendMessageStream(url, body, onSessionId, onDelta) {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(Object.assign({ stream: true }, body))
+            });
+            const ct = resp.headers.get('content-type') || '';
+            if (!ct.includes('text/event-stream')) {
+                // 非流式（RAG 降级 / 403 等错误响应）：按原 JSON 逻辑处理
+                let data = null;
+                try { data = await resp.json(); } catch (e) { data = { success: false, message: '响应解析失败' }; }
+                return { stream: false, data };
+            }
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let pending = '';   // 事件可能跨 chunk 到达，保留未完成的尾巴
+            let full = '';
+
+            const handleEvent = (eventText) => {
+                const line = eventText.split('\n').find(l => l.startsWith('data:'));
+                if (!line) return null;
+                const payload = line.slice(5).trim();
+                if (payload === '[DONE]') return 'DONE';
+                try {
+                    const ev = JSON.parse(payload);
+                    if (typeof ev.sessionId !== 'undefined' && onSessionId) onSessionId(String(ev.sessionId));
+                    if (typeof ev.delta === 'string' && ev.delta) {
+                        full += ev.delta;
+                        if (onDelta) onDelta(ev.delta);
+                    }
+                } catch (e) { /* 忽略无法解析的事件 */ }
+                return null;
+            };
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                pending += decoder.decode(value, { stream: true });
+                let idx;
+                while ((idx = pending.indexOf('\n\n')) !== -1) {
+                    const eventText = pending.slice(0, idx);
+                    pending = pending.slice(idx + 2);
+                    if (handleEvent(eventText) === 'DONE') {
+                        return { stream: true, text: full };
+                    }
+                }
+            }
+            // 连接关闭仍未收到 [DONE]：返回已收到的部分
+            return { stream: true, text: full };
+        }
+
         function renderSessionList() {
             sessionList.innerHTML = '';
             for (let id in sessions) {
@@ -356,52 +441,75 @@
 
             appendMessage('user', question);
 
+            // 流式气泡：边收边显示（打字机效果），结束时渲染 markdown
+            const bubble = appendStreamingMessage('assistant');
+
             if (tempSession) {
+                let newSessionId = null;
                 try {
-                    const response = await fetch('/chat/send-new-session', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ question, modelType: modelTypeSelect.value })
-                    });
-                    const data = await response.json();
-                    if (data.success) {
-                        const sessionId = String(data.sessionId);
-                        sessions[sessionId] = {
-                            name: '新会话',
-                            messages: [
-                                { role: 'user', content: question },
-                                { role: 'assistant', content: data.Information }
-                            ]
-                        };
-                        currentSessionId = sessionId;
-                        tempSession = false;
-                        renderSessionList();
-                        appendMessage('assistant', data.Information);
+                    const result = await sendMessageStream('/chat/send-new-session',
+                        { question, modelType: modelTypeSelect.value },
+                        id => { newSessionId = id; },          // 首条事件回传 sessionId
+                        d => bubble.append(d));
+                    if (result.stream) {
+                        bubble.finalize();
+                        if (newSessionId) {
+                            sessions[newSessionId] = {
+                                name: '新会话',
+                                messages: [
+                                    { role: 'user', content: question },
+                                    { role: 'assistant', content: result.text }
+                                ]
+                            };
+                            currentSessionId = newSessionId;
+                            tempSession = false;
+                            renderSessionList();
+                        }
                     } else {
-                        appendMessage('assistant', '[错误] ' + (data.message || '未知错误'));
+                        const data = result.data;   // 服务端降级（RAG / 错误 JSON）
+                        if (data.success) {
+                            bubble.finalize(data.Information);
+                            const sessionId = String(data.sessionId);
+                            sessions[sessionId] = {
+                                name: '新会话',
+                                messages: [
+                                    { role: 'user', content: question },
+                                    { role: 'assistant', content: data.Information }
+                                ]
+                            };
+                            currentSessionId = sessionId;
+                            tempSession = false;
+                            renderSessionList();
+                        } else {
+                            bubble.finalize('[错误] ' + (data.message || '未知错误'));
+                        }
                     }
                 } catch (err) {
                     console.error(err);
-                    appendMessage('assistant', '[错误] 无法连接到服务器');
+                    bubble.finalize('[错误] 无法连接到服务器');
                 }
             } else {
                 sessions[currentSessionId].messages.push({ role: 'user', content: question });
                 try {
-                    const response = await fetch('/chat/send', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ question, modelType: modelTypeSelect.value, sessionId: currentSessionId })
-                    });
-                    const data = await response.json();
-                    if (data.success) {
-                        appendMessage('assistant', data.Information);
-                        sessions[currentSessionId].messages.push({ role: 'assistant', content: data.Information });
+                    const result = await sendMessageStream('/chat/send',
+                        { question, modelType: modelTypeSelect.value, sessionId: currentSessionId },
+                        null,
+                        d => bubble.append(d));
+                    if (result.stream) {
+                        bubble.finalize();
+                        sessions[currentSessionId].messages.push({ role: 'assistant', content: result.text });
                     } else {
-                        appendMessage('assistant', '[错误] ' + (data.message || '未知错误'));
+                        const data = result.data;
+                        if (data.success) {
+                            bubble.finalize(data.Information);
+                            sessions[currentSessionId].messages.push({ role: 'assistant', content: data.Information });
+                        } else {
+                            bubble.finalize('[错误] ' + (data.message || '未知错误'));
+                        }
                     }
                 } catch (err) {
                     console.error(err);
-                    appendMessage('assistant', '[错误] 无法连接到服务器');
+                    bubble.finalize('[错误] 无法连接到服务器');
                 }
             }
 
