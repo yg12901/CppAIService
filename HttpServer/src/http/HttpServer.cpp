@@ -149,8 +149,27 @@ void HttpServer::onRequest(const muduo::net::TcpConnectionPtr &conn, const HttpR
                   (req.getVersion() == "HTTP/1.0" && connection != "Keep-Alive"));
     HttpResponse response(close);
 
+    // 流式扩展：把底层连接的写能力注入响应对象，Handler 可选择流式模式
+    // （handle 过程中多次写连接，结束后由框架收尾）。注入本身无副作用，
+    // 只有 Handler 显式 setStreaming(true) 才会改变发送路径。
+    response.setStreamSender([conn](const std::string& data) {
+        conn->send(data);
+    });
+    response.setConnection(conn);   // 供 Handler 构造跨线程的长生命周期发送通道
+
     // 根据请求报文信息来封装响应报文对象
     httpCallback_(req, &response); // 执行onHttpCallback函数
+
+    // 流式模式：Handler 已通过 streamSender 自行发送全部响应，
+    // 框架跳过统一序列化，避免重复发送
+    if (response.isStreaming())
+    {
+        if (response.closeConnection())
+        {
+            conn->shutdown(); // 发送缓冲排空后优雅关闭
+        }
+        return;
+    }
 
     // 可以给response设置一个成员，判断是否请求的是文件，如果是文件设置为true，并且存在文件位置在这里send出去。
     muduo::net::Buffer buf;
@@ -185,8 +204,11 @@ void HttpServer::handleRequest(const HttpRequest &req, HttpResponse *resp)
             resp->setCloseConnection(true);
         }
 
-        // 处理响应后的中间件
-        middlewareChain_.processAfter(*resp);
+        // 处理响应后的中间件（流式响应已由 Handler 自行发送，跳过，避免二次改写）
+        if (!resp->isStreaming())
+        {
+            middlewareChain_.processAfter(*resp);
+        }
     }
     catch (const HttpResponse& res) 
     {

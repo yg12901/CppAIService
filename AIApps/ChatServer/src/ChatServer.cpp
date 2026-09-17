@@ -14,6 +14,9 @@
 #include"../include/handlers/ChatSessionsHandler.h"
 #include"../include/handlers/ChatSpeechHandler.h"
 
+#include"../include/AIUtil/StreamWorkerPool.h"
+#include"../include/AIUtil/SseKeepalive.h"
+
 #include "../include/ChatServer.h"
 #include "../../../HttpServer/include/http/HttpRequest.h"
 #include "../../../HttpServer/include/http/HttpResponse.h"
@@ -41,6 +44,17 @@ void ChatServer::initialize() {
     initializeMiddleware();
 
     initializeRouter();
+
+    // SSE 流式基建：
+    // 1) 工作线程池——流式任务从 Muduo IO 线程剥离，IO 线程只做"写头+提交任务"
+    //    立即返回（原先一条流占死一个 IO 线程，4 条流就拖垮全部连接）
+    StreamWorkerPool::instance().start(8);
+
+    // 2) 心跳保活——主 loop 每 5s 扫描活跃流，空闲 >10s 补发 ": ping" 注释行，
+    //    防止 TTFT 期间（LLM 思考/MCP 工具执行）被 nginx/SLB 等中间代理掐断
+    httpServer_.getLoop()->runEvery(5.0, []() {
+        SseKeepalive::instance().onTimer();
+    });
 }
 
 void ChatServer::initChatMessage() {

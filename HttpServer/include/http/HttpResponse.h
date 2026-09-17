@@ -1,11 +1,13 @@
 #pragma once
 
 #include <muduo/net/TcpServer.h>
+#include <functional>
+#include <string>
 
 namespace http
 {
 
-class HttpResponse 
+class HttpResponse
 {
 public:
     enum HttpStatusCode
@@ -26,6 +28,29 @@ public:
         : statusCode_(kUnknown)
         , closeConnection_(close)
     {}
+
+    // ---------------- 流式响应扩展（SSE 等） ----------------
+    // Handler 声明流式模式：框架跳过统一序列化发送，由 Handler 通过
+    // streamSender 自行多次写连接（如 LLM 增量透传）
+    void setStreaming(bool on) { streaming_ = on; }
+    bool isStreaming() const { return streaming_; }
+
+    // 注入底层连接写能力（由 HttpServer::onRequest 设置，Handler 只读）
+    void setStreamSender(std::function<void(const std::string&)> sender)
+    { streamSender_ = std::move(sender); }
+
+    // 注入底层连接本体（由 HttpServer::onRequest 设置）
+    // 供 Handler 构造 SseChannel 等长生命周期发送通道（跨线程持有安全）
+    void setConnection(const muduo::net::TcpConnectionPtr& conn) { conn_ = conn; }
+    muduo::net::TcpConnectionPtr connection() const { return conn_; }
+
+    // 取写接口；未注入（单元测试等场景）时返回 false
+    bool sendChunk(const std::string& data)
+    {
+        if (!streamSender_) return false;
+        streamSender_(data);
+        return true;
+    }
 
     void setVersion(std::string version)
     { httpVersion_ = version; }
@@ -67,13 +92,17 @@ public:
 
     void appendToBuffer(muduo::net::Buffer* outputBuf) const;
 private:
-    std::string                        httpVersion_; 
+    std::string                        httpVersion_;
     HttpStatusCode                     statusCode_;
     std::string                        statusMessage_;
     bool                               closeConnection_;
     std::map<std::string, std::string> headers_;
     std::string                        body_;
     bool                               isFile_;
+    // 流式响应状态
+    bool                               streaming_ = false;
+    std::function<void(const std::string&)> streamSender_;
+    muduo::net::TcpConnectionPtr       conn_;   // 底层连接（流式通道构造用）
 };
 
 } // namespace http

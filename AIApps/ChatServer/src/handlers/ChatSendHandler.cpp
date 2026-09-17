@@ -1,4 +1,7 @@
 #include "../include/handlers/ChatSendHandler.h"
+#include "../include/AIUtil/SseChannel.h"
+#include "../include/AIUtil/SseKeepalive.h"
+#include "../include/AIUtil/StreamWorkerPool.h"
 
 
 // 核心聊天接口 POST /chat/send
@@ -31,6 +34,7 @@ void ChatSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* r
         std::string userQuestion;
         std::string modelType;
         std::string sessionId;
+        bool stream = true;   // 默认请求流式（打字机效果），前端可显式传 false
 
         auto body = req.getBody();
         if (!body.empty()) {
@@ -39,6 +43,7 @@ void ChatSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* r
             if (j.contains("sessionId")) sessionId = j["sessionId"];
 
             modelType = j.contains("modelType") ? j["modelType"].get<std::string>() : "1";
+            if (j.contains("stream")) stream = j["stream"].get<bool>();
         }
 
         // 功能权限校验：canChat=false 的用户禁止使用 AI 对话（fail-closed，未登录刷新前一律拒绝）
@@ -71,6 +76,73 @@ void ChatSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* r
             AIHelperPtr= userSessions[sessionId];
         }
         
+
+        // 流式响应模式：请求要求流式且模型支持（RAG 等自动降级非流式）
+        // 登录/权限校验已在上方完成（401/403 走标准 JSON 错误响应）
+        if (stream && AIHelperPtr->isStreamSupported()) {
+            auto conn = resp->connection();
+            if (!conn) {
+                // 无底层连接（异常场景）：退回非流式路径
+                std::string aiInformation = AIHelperPtr->chat(userId, username, sessionId, userQuestion, modelType);
+                json successResp;
+                successResp["success"] = true;
+                successResp["Information"] = aiInformation;
+                std::string successBody = successResp.dump(4);
+                resp->setStatusLine(req.getVersion(), http::HttpResponse::k200Ok, "OK");
+                resp->setCloseConnection(false);
+                resp->setContentType("application/json");
+                resp->setContentLength(successBody.size());
+                resp->setBody(successBody);
+                return;
+            }
+
+            // 1) 构造长生命周期发送通道（Handler 返回后 resp 栈对象析构，
+            //    worker 只能持有 SseChannel，不能持有 resp）
+            auto channel = std::make_shared<SseChannel>(conn);
+            SseKeepalive::instance().registerFlow(channel);
+
+            // 2) IO 线程一次性写 SSE 响应头
+            channel->sendRaw(
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/event-stream\r\n"
+                "Cache-Control: no-cache\r\n"
+                "Connection: close\r\n"
+                "\r\n");
+
+            // 3) 打包流式任务丢给 worker 池，IO 线程立即返回（不占 Muduo 线程）
+            auto helper = AIHelperPtr;   // shared_ptr 拷贝进 lambda，生命周期安全
+            StreamWorkerPool::instance().submit(
+                [helper, channel, userId, username, sessionId, userQuestion, modelType]() {
+                    // 增量回调：delta 转 SSE 事件；客户端断开时 requestAbort
+                    // 中止上游 LLM 流（WriteCallback 返回 0，不再浪费 token）
+                    helper->setStreamCallback([helper, channel](const std::string& delta) {
+                        json ev;
+                        ev["delta"] = delta;
+                        if (!channel->sendEvent(ev.dump())) {
+                            helper->requestAbort();
+                        }
+                    });
+                    try {
+                        helper->chat(userId, username, sessionId, userQuestion, modelType, true);
+                    } catch (const std::exception& e) {
+                        if (channel->alive()) {
+                            json ev;
+                            ev["delta"] = std::string("[流式异常] ") + e.what();
+                            channel->sendEvent(ev.dump());
+                        }
+                    }
+                    // 4) 收尾：[DONE] + 注销心跳 + 优雅关连接（排空缓冲后断开）
+                    channel->sendRaw("data: [DONE]\n\n");
+                    SseKeepalive::instance().unregisterFlow(channel->id());
+                    channel->close();
+                });
+
+            // 5) 声明流式模式：框架跳过统一序列化；连接收尾由 worker 在
+            //    DONE 后 close()，故这里必须保持 closeConnection=false
+            resp->setStreaming(true);
+            resp->setCloseConnection(false);
+            return;
+        }
 
         std::string aiInformation=AIHelperPtr->chat(userId, username,sessionId, userQuestion, modelType);
         json successResp;

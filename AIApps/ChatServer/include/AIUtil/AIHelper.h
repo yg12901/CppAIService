@@ -2,6 +2,9 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <functional>
+#include <chrono>
+#include <atomic>
 #include <curl/curl.h>
 #include <iostream>
 #include <sstream>
@@ -12,7 +15,7 @@
 #include"AIFactory.h"
 #include"AIConfig.h"
 #include"AIToolRegistry.h"
-
+#include"SseParser.h"
 
 //这边封装curl去访问对阿里的模型
 class AIHelper {
@@ -30,9 +33,21 @@ public:
     // 恢复一条消息
     void restoreMessage(const std::string& userInput, long long ms);
 
-    // 发送聊天消息，返回AI的响应内容
-    // messages: [{"role":"system","content":"..."}, {"role":"user","content":"..."}]
-    std::string chat(int userId, std::string userName, std::string sessionId, std::string userQuestion, std::string modelType);
+    // 发送聊天消息，返回AI的响应内容（完整答案，流式时为增量拼接结果）
+    // stream=true 时：模型支持且已设置回调则走 SSE 流式，边收边推增量
+    std::string chat(int userId, std::string userName, std::string sessionId, std::string userQuestion, std::string modelType, bool stream = false);
+
+    // 设置流式增量回调（Handler 在调 chat 前设置；chat 结束时自动清空防止悬挂）
+    void setStreamCallback(std::function<void(const std::string& delta)> cb)
+    { m_streamCallback = std::move(cb); }
+
+    // 当前策略是否支持 SSE 流式（Handler 据此决定响应模式）
+    bool isStreamSupported() const { return strategy && strategy->isStreamSupported(); }
+
+    // 请求中止（客户端断开连接等场景）：WriteCallback 将返回 0 使 curl
+    // 立刻中止下载（CURLE_WRITE_ERROR），不再浪费 LLM token
+    void requestAbort() { m_abortRequested.store(true); }
+    bool abortRequested() const { return m_abortRequested.load(); }
 
     // 可选：发送自定义请求体
     json request(const json& payload);
@@ -42,13 +57,26 @@ public:
 private:
     std::string escapeString(const std::string& input);
     //加入到mysql的接口（提供加入到线程池的接口，线程池做异步mysql更新操作）
-    //todo: 
+    //todo:
     void pushMessageToMysql(int userId, const std::string& userName, bool is_user, const std::string& userInput, long long ms, std::string sessionId);
 
-    // 内部方法：执行curl请求，返回原始JSON
+    // 内部方法：执行curl请求，返回原始JSON（流式时返回由增量拼成的标准形状响应）
     json executeCurl(const json& payload);
-    // curl 回调函数，把返回的数据写到 string buffer
+
+    // curl 回调上下文：累积原始响应 + 触发流式解析
+    struct CurlCtx {
+        std::string buffer;        // 原始响应全量累积（非流式路径/兜底用）
+        AIHelper* self = nullptr;  // 流式解析宿主
+        bool wantStream = false;   // 本次请求是否期望流式
+    };
+    // curl 回调函数，把返回的数据写到 ctx 并按需触发流式解析
     static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp);
+
+    // WriteCallback 内部：喂 SSE 解析器，逐个 delta 触发回调并记录 TTFT
+    void processStreamChunk(const std::string& chunk);
+
+    // 重置一次请求的流式状态
+    void resetStreamState();
 
 private:
 
@@ -72,4 +100,12 @@ private:
     int m_lastCompletionTokens = 0;
     // 当前 chat 使用的模型标识（入库用，用户消息行也记录）
     std::string m_curModel;
+
+    // ---------------- 流式状态（单次 chat 内生命周期） ----------------
+    std::function<void(const std::string& delta)> m_streamCallback; // 增量转发回调
+    SseParser   m_sse;              // SSE 解析状态机（跨 WriteCallback 保留）
+    std::string m_streamedAnswer;   // 已收到的增量拼接（完整答案）
+    int         m_streamDeltaCount = 0; // 已收到的增量条数（判降级用）
+    std::chrono::steady_clock::time_point m_chatStart; // chat 起点（算 TTFT）
+    std::atomic<bool> m_abortRequested{false}; // 取消标志（客户端断开时置位）
 };
