@@ -1,6 +1,6 @@
 # CppAIService 面试技术准备文档
 
-> 本文档汇总了 CppAIService 项目的 **8 个简历要点 + 15 个深度技术话题**，每块包含代码位置、工作原理、面试话术和可能被追问的问题。
+> 本文档汇总了 CppAIService 项目的 **8 个简历要点 + 18 个深度技术话题**，每块包含代码位置、工作原理、面试话术和可能被追问的问题。
 
 ---
 
@@ -24,6 +24,9 @@
 - [十六、深度话题 8：messages 结构的 role 优化](#十六深度话题-8messages-结构的-role-优化)
 - [十七、深度话题 9：MCP parseAIResponse 的 4 层兜底方案](#十七深度话题-9mcp-parseairesponse-的-4-层兜底方案)
 - [十八、FAQ：面试最可能被问的 8 个高频问题](#十八faq面试最可能被问的-8-个高频问题)
+- [十九、深度话题 10：多租户权限与用量统计](#十九深度话题-10多租户权限与用量统计)
+- [二十、深度话题 11：SSE 流式透传（打字机效果）](#二十深度话题-11sse-流式透传打字机效果)
+- [二十一、深度话题 12：SSE 二期优化（线程池/背压/心跳/取消）](#二十一深度话题-12sse-二期优化线程池背压心跳取消)
 
 ---
 
@@ -1219,3 +1222,127 @@ AIToolCall AIConfig::parseAIResponse(const std::string& response) const {
 | 1 | `parseAIResponse` 只 `json::parse` 一下 | `AIConfig.cpp:63` | "这是当前项目的局限，5-15% 的场景 AI 输出非纯 JSON 会失败。我给 4 层兜底方案（正则抠代码块 + 抠花括号 + Schema 校验 + 重试）能到 99%+" |
 | 2 | messages 靠 `i % 2 == 0` 猜 role | `AIHelper.h:68` | "这是个隐式约定。我建议改成显式 struct，role 写进数据里，不依赖下标" |
 | 3 | `cleanExpiredSessions` 是空的 | `SessionManager.cpp:64-69` | "这是遗留的 TODO。应该加定时器后台清理过期 session" |
+
+---
+
+## 十九、深度话题 10：多租户权限与用量统计
+
+### 改造内容
+
+| 模块 | 文件 | 作用 |
+|------|------|------|
+| DDL | `resource/init_v2.sql` | users 加 can_chat/can_image/can_tts；chat_message 加 model/prompt_tokens/completion_tokens |
+| 权限 DAO | `AIUtil/UserAuthDao.h/.cpp` | 参数化查询 + ResultSetGuard RAII 释放 |
+| 权限写入 | `ChatLoginHandler.cpp` | 登录查一次写 Session（canChat/canImage/canTts） |
+| fail-closed 校验 | 4 个 Handler | canChat×2 / canImage / canTts，Session 查不到一律拒绝 |
+| 用量采集 | `AIHelper.cpp` executeCurl | 解析 `response["usage"]`，MCP 两段累加 |
+| 用量入库 | `pushMessageToMysql` | AI 回复行带 tokens，用户消息行填 0 |
+| Key 脱敏 | `AIHelper.cpp` | 日志只打前 6 位（原来打完整 key 是漏洞） |
+
+### 面试话术
+
+> "多租户这块我做了功能级权限和用量统计两层。权限用三个布尔字段（can_chat/can_image/can_tts），登录时查一次库写进 Session，之后每个请求从 Session 读——纳秒级不打库；校验是 fail-closed 语义，Session 里查不到权限字段一律拒绝，宁严勿松。用量统计在 executeCurl 里解析 OpenAI 兼容响应的 usage 字段，MCP 两段式自动累加两段消耗，随聊天消息异步入库（走原有 RabbitMQ 链路，不新增同步开销）。顺手修了一个安全问题：原来 curl 日志打印完整 API Key，改成只打前 6 位。"
+
+### 可能追问
+
+**Q1：为什么不用 role 数字等级（0/1/2）而用功能布尔？**
+- role 是"高级包含低级"的隐式层级；功能布尔是正交的——"能聊天但不能用图片识别"这种组合 role 表达不了。且新增功能时加一列即可，不用重新定义等级语义
+
+**Q2：为什么 API Key 不按用户配置？**
+- 当前阶段是内部平台，key 统一环境变量管理简单可靠；按用户配 key 需要加密存储（AES-256-GCM）、缓存（LRU+TTL）、密钥轮换一整套基建，等真有多租户计费需求再上
+
+**Q3：fail-closed 是什么？为什么这么设计？**
+- 默认拒绝。权限数据缺失（DB 抖动、老 Session）时拒绝比放行安全——攻击面最小化，代价只是用户重新登录一次
+
+---
+
+## 二十、深度话题 11：SSE 流式透传（打字机效果）
+
+### 核心组件
+
+| 组件 | 文件 | 职责 |
+|------|------|------|
+| 框架扩展 | `HttpResponse.h` + `HttpServer.cpp` | setStreaming/setStreamSender/setConnection 三件套；流式时跳过统一序列化 |
+| SSE 解析器 | `AIUtil/SseParser.h/.cpp` | 跨回调状态保留、`\n\n`/`\r\n\r\n` 切分、[DONE]、全量 JSON 检测回退、usage 容错 |
+| 流式开关 | `AIStrategy.h` | `isStreamSupported()` 默认 false；百炼/豆包/MCP true，**RAG false** |
+| 流式回调 | `AIHelper.h/.cpp` | setStreamCallback、CurlCtx、TTFT 日志、流式返回标准形状响应（parseResponse 无感） |
+| Handler 分支 | `ChatSendHandler` / `ChatCreateAndSendHandler` | SSE 头 → delta 事件 → [DONE]；新会话首条事件回传 sessionId |
+| 前端 | `AI.html` | fetch + ReadableStream 手写 SSE 解析（EventSource 不支持 POST）；打字机气泡 |
+
+### 四级降级链（必背）
+
+```
+① 模型不支持（RAG）→ isStreamSupported=false，自动非流式
+② 服务端忽略 stream 返回全量 JSON → SseParser 检测 plainJson 回退
+③ 流异常且零增量 → 重发一次非流式（功能不倒退）
+④ 流中断但已有增量 → 部分答案收尾（WARN）
+```
+
+### 关键设计点
+
+- **MCP 两段式**：第 1 段（工具决策）必须全量——要等完整 JSON 才能阅卷；第 2 段（组织答案）才开流式
+- **持久化语义不变**：chat 结束拿增量拼接的完整答案走原有 addMessage
+- **SSE 解析独立成文件**：`SseParser` 纯逻辑可单测（tests/test_sse.cpp，31 断言全过）
+- **登录/权限校验在写 SSE 头之前**：401/403 仍是标准 JSON 错误响应
+
+### 面试话术
+
+> "流式改造我做了两段中继：LLM → 服务端用 libcurl 的 WriteCallback 逐块收 SSE，服务端 → 浏览器用 Muduo 连接逐条转发。核心难点三个：一是框架原本只支持'handler 结束后一次性序列化发送'，我给 HttpResponse 加了流式三件套（流式声明 + 连接写回调 + 连接本体注入），流式时跳过统一序列化，非流式路径零改动；二是 SSE 事件可能跨 WriteCallback 到达，我写了独立的状态机解析器保留跨回调尾巴，首块数据还做了格式检测——服务端如果忽略 stream 返回全量 JSON 能自动回退；三是降级链，四级兜底保证任何情况下功能不比改造前差。前端因为 EventSource 不支持 POST，用 fetch + ReadableStream 手写了同构的事件解析。"
+
+### 可能追问
+
+**Q1：为什么不用 WebSocket？**
+- SSE 是单向推送，正好匹配"LLM 生成 → 前端展示"的场景；HTTP 语义保留（鉴权、CORS、中间件全兼容）；实现成本远低于 WebSocket 升级协议。双向需求（语音打断等）才需要 WebSocket
+
+**Q2：Content-Length 都没有，浏览器怎么知道流结束了？**
+- SSE 响应不写 Content-Length，靠 `data: [DONE]` 应用层结束标记 + 服务端关连接（shutdown 排空缓冲后 FIN）双保险；fetch 的 reader 在连接关闭时 read() 返回 done
+
+**Q3：跨 chunk 的事件切分怎么处理？（高频手写题）**
+- 与前端同构：`pending += chunk` → 循环 `indexOf('\n\n')` 切完整事件 → 剩余留 pending 等下一块 → 流结束后 flush 处理无分隔符的尾巴。测试里专门覆盖了"半截 JSON 跨两次 feed"的场景
+
+---
+
+## 二十一、深度话题 12：SSE 二期优化（线程池/背压/心跳/取消）
+
+### 要解决的两个问题
+
+| 问题 | 后果 |
+|------|------|
+| 一期同步透传：Handler 在 IO 线程里跑 curl 到 [DONE] | 一条流钉死一个 IO 线程，4 个流占满后**同 loop 其他连接全部卡死** |
+| TTFT 前（LLM 思考/MCP 工具执行 10-40s）无任何字节 | nginx（60s）/SLB（30s）idle 超时掐连 |
+
+### 四个新组件
+
+| 组件 | 文件 | 一句话职责 |
+|------|------|-----------|
+| SseChannel | `AIUtil/SseChannel.h` | 持连接（解决 resp 栈对象生命周期）+ 断开检测 + 1MB outputBuffer 背压 + 心跳触点 |
+| StreamWorkerPool | `AIUtil/StreamWorkerPool.h/.cpp` | 8 线程任务池：IO 线程"写头+提交任务"微秒级返回 |
+| SseKeepalive | `AIUtil/SseKeepalive.h/.cpp` | weak_ptr 注册表 + 主 loop runEvery(5s)，空闲>10s 补发 `: ping` |
+| 取消传播 | `AIHelper.cpp` | requestAbort → WriteCallback 返回 0 → curl 中止下载 |
+
+### 三个精妙设计（面试重点展开）
+
+**① 背压反压链**：客户端收得慢 → muduo outputBuffer 超 1MB → SseChannel::prepareSend sleep 挡住 worker → curl 的 WriteCallback 跟着被挡 → 不再继续读 LLM 流 → TCP 窗口收紧反压到 LLM 侧。**内存有界，天然限速，零额外队列**
+
+**② 取消传播**：用户关页面 → sendEvent 失败 → requestAbort → WriteCallback 返回 0（libcurl 标准玩法，视为写错误）→ 立刻中止下载。**客户端断开不再浪费剩余 token——直接省成本**
+
+**③ 心跳不走背压**：`: ping` 在主 loop 定时器线程发送，若走 prepareSend 的背压 sleep 会卡死主 loop——所以 sendPing 独立路径只查 alive。这个细节能体现对线程模型的把握
+
+### 生命周期坑（体现深度）
+
+`resp` 是 `onRequest` 的**栈对象**，Handler 一 return 就析构——worker 线程绝不能持有 `resp*`。必须 `make_shared<SseChannel>(conn)` 让 worker 持 shared_ptr。配套地 `resp->setCloseConnection(false)`：流式收尾由 worker 在 [DONE] 后 `channel->close()`，若框架在 Handler 返回时就 shutdown 会把还没开始的流掐死。
+
+### 面试话术
+
+> "SSE 二期做了三层解耦。SseChannel 解决跨线程的连接生命周期和背压——监控 muduo 的 outputBuffer，超 1MB 就挡住发送线程，反压一路传导到 LLM 读取，内存有界。StreamWorkerPool 把流式任务从 IO 线程剥离——原先一条流钉死一个 EventLoop 线程，4 个流就拖垮全站，现在 IO 线程写完头微秒级返回。SseKeepalive 用主 loop 定时器补发 SSE 注释行心跳，专门盖住 MCP 工具执行期间 curl 回调够不着的空闲窗口。最得意的是取消传播：客户端断开通过 WriteCallback 返回 0 让 curl 中止下载，直接省下剩余 token 消耗。"
+
+### 可能追问
+
+**Q1：为什么心跳用定时器线程而不用 curl 进度回调？**
+- 进度回调只在 curl 传输期间触发；MCP"第 1 段结束→工具执行 5s→第 2 段开始"的间隙没有 curl 活动，进度回调发不了心跳。独立定时器全覆盖
+
+**Q2：背压为什么用 sleep 轮询而不是条件变量？**
+- 简单可靠：10ms 粒度对 1MB 缓冲排空场景足够精确，条件变量需要 writeComplete 回调配合唤醒，复杂度高收益低。若要抠延迟可换 `setWriteCompleteCallback`
+
+**Q3：worker 里 chat 抛异常会不会打死线程池？**
+- 不会：任务 lambda 自带 try-catch 兜底，workerLoop 取到任务后执行，异常不会逸出到循环外；SseKeepalive 的注册表用 weak_ptr，worker 意外退出没注销，下轮扫描自动清理

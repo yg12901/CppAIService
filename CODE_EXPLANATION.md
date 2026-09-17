@@ -52,6 +52,26 @@
 - [十四、HttpServer 框架部分](#十四httpserver-框架部分)
 - [十五、完整请求流程](#十五完整请求流程)
 - [十六、部署与运行](#十六部署与运行)
+- [十七、多租户权限与用量统计（v2 改造）](#十七多租户权限与用量统计v2-改造)
+  - [init_v2.sql](#init_v2sql)
+  - [UserAuthDao.h / UserAuthDao.cpp](#userauthdao--userauthdaocpp)
+  - [权限写入会话（ChatLoginHandler）](#权限写入会话chatloginhandler)
+  - [五个 Handler 的 fail-closed 校验](#五个-handler-的-fail-closed-校验)
+  - [AIHelper 用量采集与入库](#aihelper-用量采集与入库)
+- [十八、SSE 流式透传（打字机效果）](#十八sse-流式透传打字机效果)
+  - [框架扩展：HttpResponse 流式三件套](#框架扩展httpresponse-流式三件套)
+  - [SseParser.h / SseParser.cpp](#sseparserh--sseparsercpp)
+  - [策略层流式开关](#策略层流式开关)
+  - [AIHelper 流式回调与四级降级链](#aihelper-流式回调与四级降级链)
+  - [Handler 流式响应分支](#handler-流式响应分支)
+  - [前端 AI.html 流式改造](#前端-aihtml-流式改造)
+  - [test_sse 单元测试](#test_sse-单元测试)
+- [十九、SSE 二期优化：线程池 / 背压 / 心跳 / 取消传播](#十九sse-二期优化线程池--背压--心跳--取消传播)
+  - [SseChannel.h](#ssechannelh)
+  - [StreamWorkerPool.h / StreamWorkerPool.cpp](#streamworkerpoolh--streamworkerpoolcpp)
+  - [SseKeepalive.h / SseKeepalive.cpp](#ssekeepaliveh--ssekeepalivecpp)
+  - [AIHelper 取消传播](#aihelper-取消传播)
+  - [ChatServer 装配](#chatserver-装配)
 
 ---
 
@@ -1822,6 +1842,321 @@ systemctl start rabbitmq-server
 
 # 或指定端口
 ./http_server -p 8080
+```
+
+---
+
+## 十七、多租户权限与用量统计（v2 改造）
+
+### 改造背景
+
+原始系统存在三个问题：任何登录用户都能使用全部 4 个模型、LLM 用量（token）没有落库、executeCurl 的日志打印完整 API Key。本轮融资式改造引入**功能级权限字段**与**token 用量统计**，API Key 仍统一由环境变量提供（不按用户配置，保持部署简单）。
+
+### init_v2.sql
+
+`AIApps/ChatServer/resource/init_v2.sql`，在 `ChatHttpServer` 库上执行：
+
+```sql
+-- 1) 用户表加功能级权限列（1=有权限 0=无权限，默认放开，按需收回）
+ALTER TABLE users
+    ADD COLUMN can_chat  TINYINT NOT NULL DEFAULT 1,   -- AI 对话
+    ADD COLUMN can_image TINYINT NOT NULL DEFAULT 1,   -- 图像识别
+    ADD COLUMN can_tts   TINYINT NOT NULL DEFAULT 1;   -- 语音合成
+
+-- 2) 聊天消息表加模型与 token 用量列（AI 回复行带用量，用户消息行填 0）
+ALTER TABLE chat_message
+    ADD COLUMN model             VARCHAR(32)  DEFAULT '',
+    ADD COLUMN prompt_tokens     INT          DEFAULT 0,
+    ADD COLUMN completion_tokens INT          DEFAULT 0;
+```
+
+设计要点：**默认 1**——存量用户行为不变，需要收回某人权限时 `UPDATE users SET can_image=0 WHERE id=xxx`，该用户重新登录后生效。
+
+### UserAuthDao.h / UserAuthDao.cpp
+
+`AIApps/ChatServer/include/AIUtil/UserAuthDao.h` —— 权限查询 DAO，全参数化查询：
+
+```cpp
+class UserAuthDao {
+public:
+    // 查用户功能权限；查不到（用户不存在）返回 false，三个权限均置 false（最保守）
+    static bool GetUserPermissions(int userId, bool& canChat, bool& canImage, bool& canTts);
+};
+```
+
+`src/AIUtil/UserAuthDao.cpp` 实现：
+
+- **ResultSetGuard**：RAII 小工具，确保 `sql::ResultSet` 释放，避免连接池连接被占用泄漏（现有代码普遍漏 delete，这里做了正确示范）
+- **GetUserPermissions**：`SELECT can_chat, can_image, can_tts FROM users WHERE id = ?` 预编译查询，`getInt(...) != 0` 转 bool；异常时打日志返回 false（三个权限保持 false，fail-closed）
+
+### 权限写入会话（ChatLoginHandler）
+
+`ChatLoginHandler.cpp` 登录成功处，把权限查一次写入 Session：
+
+```cpp
+session->setValue("isLoggedIn", "true");
+{
+    bool canChat = false, canImage = false, canTts = false;
+    UserAuthDao::GetUserPermissions(userId, canChat, canImage, canTts);
+    session->setValue("canChat",  canChat  ? "true" : "false");
+    session->setValue("canImage", canImage ? "true" : "false");
+    session->setValue("canTts",   canTts   ? "true" : "false");
+}
+```
+
+登录时查一次库，之后每个请求从 Session 读（`unordered_map` 内存读，纳秒级），不再打库。
+
+### 五个 Handler 的 fail-closed 校验
+
+| Handler | 校验字段 | 拒绝返回 |
+|---------|---------|---------|
+| `ChatSendHandler.cpp` | `canChat` | 403 `chat not permitted...` |
+| `ChatCreateAndSendHandler.cpp` | `canChat` | 同上 |
+| `AIUploadSendHandler.cpp` | `canImage` | 403 `image recognition not permitted...` |
+| `ChatSpeechHandler.cpp` | `canTts` | 403 `tts not permitted...` |
+
+统一模式（以 ChatSendHandler 为例）：
+
+```cpp
+// 功能权限校验：canChat=false 的用户禁止使用 AI 对话（fail-closed）
+if (session->getValue("canChat") != "true") {
+    // ... 403 JSON 响应
+}
+```
+
+**fail-closed 语义**：Session 里查不到权限字段（老 Session、DB 异常）时 `getValue` 返回空串，`!= "true"` 判定为拒绝——宁严勿松，用户重新登录即可恢复。
+
+### AIHelper 用量采集与入库
+
+**采集**（`AIHelper.cpp` executeCurl 内）：
+
+```cpp
+json response = json::parse(ctx.buffer);
+// 解析 LLM 用量（usage 字段），MCP 两段式会自动累加两段消耗
+if (response.contains("usage")) {
+    m_lastPromptTokens += response["usage"].value("prompt_tokens", 0);
+    m_lastCompletionTokens += response["usage"].value("completion_tokens", 0);
+}
+```
+
+OpenAI 兼容响应的 `usage` 字段天然携带本轮 token 数；MCP 两段式调用两次 executeCurl，用 `+=` 累加。
+
+**入库**（`pushMessageToMysql`）：INSERT 追加三列，仅 AI 回复行（is_user=0）带用量：
+
+```cpp
+int promptTokens     = is_user ? 0 : m_lastPromptTokens;
+int completionTokens = is_user ? 0 : m_lastCompletionTokens;
+// INSERT INTO chat_message (..., model, prompt_tokens, completion_tokens) VALUES (...)
+```
+
+**Key 脱敏日志**（executeCurl）：原来 `cout << ... << strategy->getApiKey()` 打印完整 key 是安全隐患，改为只打前 6 位 + `"..."`。
+
+---
+
+## 十八、SSE 流式透传（打字机效果）
+
+### 目标架构
+
+```
+浏览器 ←SSE— ChatServer ←SSE— LLM API
+服务端边收 LLM 的增量，边转发给浏览器（SSE 中继）
+```
+
+请求体加 `"stream": true`，LLM 返回 SSE 事件流（`data: {"choices":[{"delta":{"content":"增量"}}]}\n\n`，结束标记 `data: [DONE]`）。
+
+### 框架扩展：HttpResponse 流式三件套
+
+`HttpServer/include/http/HttpResponse.h` 新增：
+
+```cpp
+void setStreaming(bool on);          // 声明流式模式：框架跳过统一序列化
+bool isStreaming() const;
+void setStreamSender(std::function<void(const std::string&)>);  // 注入连接写能力
+bool sendChunk(const std::string&);  // Handler 直写连接
+void setConnection(const muduo::net::TcpConnectionPtr&);        // 注入连接本体
+muduo::net::TcpConnectionPtr connection() const;
+```
+
+`HttpServer.cpp` 的 `onRequest` 配套改造：
+
+1. **注入**：构造 response 后立即 `setStreamSender`（lambda 捕获 conn 调 `conn->send`）+ `setConnection(conn)`——注入本身无副作用，只有 Handler 显式 `setStreaming(true)` 才改变发送路径
+2. **跳过**：`httpCallback_` 返回后 `if (response.isStreaming()) { ... return; }`——流式响应已由 Handler 自行发送，框架不再 appendToBuffer + send（避免重复发送）
+3. **中间件**：`handleRequest` 中 `if (!resp->isStreaming()) processAfter(*resp)`——跳过 CORS 后置处理（响应已发出，改 header 无意义）
+
+**非流式路径（登录/历史等所有其他 Handler）行为完全不变。**
+
+### SseParser.h / SseParser.cpp
+
+`include/AIUtil/SseParser.h` + `src/AIUtil/SseParser.cpp` —— 独立可单测的 SSE 解析器（与 AIHelper 解耦，纯逻辑无 IO 依赖）：
+
+```cpp
+struct SseParser {
+    std::string pending;        // 跨 WriteCallback 的未完成事件尾巴
+    bool done;                  // 收到 [DONE]
+    bool formatChecked;         // 是否已判定响应格式
+    bool plainJson;             // true = 服务端返回全量 JSON（未走流式）
+    int  usagePrompt/usageCompletion;  // 最后事件可能带的 usage（容错）
+
+    bool feed(const std::string& chunk, std::vector<std::string>& deltas);
+    void flush(std::vector<std::string>& deltas);
+};
+```
+
+四个方法各司其职：
+
+- **findSep**：找事件分隔符（兼容 `\n\n` 与 `\r\n\r\n`），返回位置与长度
+- **feed**：新数据拼进 pending；首块数据判定格式（跳过前导空白后不以 `data:` 开头 → `plainJson=true` 返回 false，调用方走全量路径）；然后循环切事件，不足一个完整事件的留在 pending 等下一块
+- **handleEvent**：多行 `data:` 聚合（SSE 规范）；`[DONE]` 置完成标志；否则 json 解析取 `choices[0].delta.content`（缺失/空串/非法 JSON 全部容错跳过）；顺手累加 usage
+- **flush**：流结束后处理 pending 里无结尾分隔符的最后一段尾巴
+
+### 策略层流式开关
+
+`AIStrategy.h` 基类新增虚函数，默认 false：
+
+```cpp
+virtual bool isStreamSupported() const { return false; }
+```
+
+`AliyunStrategy` / `DouBaoStrategy` / `AliyunMcpStrategy` override 返回 true；**`AliyunRAGStrategy` 保持 false**——RAG 是百炼应用接口（`input.messages` 嵌套格式），不支持 OpenAI 的 stream 协议，请求 stream 时自动降级非流式。
+
+### AIHelper 流式回调与四级降级链
+
+**回调机制**（`AIHelper.h`）：
+
+```cpp
+void setStreamCallback(std::function<void(const std::string& delta)> cb);
+bool isStreamSupported() const;   // Handler 决策用
+```
+
+chat() 内用 RAII guard 保证**结束时自动清空回调**（防止跨请求悬挂）。
+
+**executeCurl 改造**：WriteCallback 的 userp 从裸 `std::string*` 改为 `CurlCtx{buffer, self, wantStream}`——既累积全量响应（非流式路径不变），又按需触发 `processStreamChunk`（喂 SseParser → 逐 delta 调 m_streamCallback → 首个 delta 记录 TTFT）。流式成功时返回由增量拼成的标准形状响应 `{"choices":[{"message":{"content", m_streamedAnswer}}]}`，**parseResponse 完全无感**。
+
+**chat() 流式主流程**（`stream` 参数默认 false，Handler 透传）：
+
+- 非 MCP 且 `stream && isStreamSupported() && m_streamCallback`：payload 加 `"stream": true` 走流式
+- **MCP 两段式**：第 1 段（决策是否调工具）**必须全量**——要等完整 JSON 才能阅卷；第 2 段（组织最终答案）开流式
+
+**四级降级链**（失败兜底）：
+
+```
+① 模型不支持（RAG）→ 自动非流式（isStreamSupported=false）
+② 服务端忽略 stream 返回全量 JSON → SseParser 检测 plainJson 自动回退
+③ 流异常且零增量 → 重发一次非流式请求（功能不倒退）
+④ 流中断但已有增量 → 已收到的部分当完整答案收尾（WARN 日志）
+```
+
+持久化语义不变：chat 结束拿拼接的完整答案走原有 addMessage（内存 + MQ 入库）。
+
+### Handler 流式响应分支
+
+`ChatSendHandler.cpp` / `ChatCreateAndSendHandler.cpp` 在**登录、权限校验之后**（401/403 仍是标准 JSON）：
+
+1. 写 SSE 响应头（一次性）：`Content-Type: text/event-stream` + `Cache-Control: no-cache`（不带 Content-Length，连接关闭即流结束）
+2. 设置增量回调：每个 delta 转 `data: {"delta":"..."}\n\n`（json.dump 自动转义特殊字符）
+3. 调 `chat(..., true)`；异常兜底发 error 事件保证前端能收尾
+4. 写 `data: [DONE]\n\n` 结束
+
+`ChatCreateAndSendHandler` 额外以**首条事件回传 sessionId**（新会话前端要先拿到 ID 才能保存会话）。请求体 `stream` 字段默认 true，前端可显式传 false 走旧 JSON 接口。
+
+### 前端 AI.html 流式改造
+
+EventSource 只支持 GET，聊天是 POST——必须用 **fetch + ReadableStream**：
+
+- **appendStreamingMessage(role)**：创建打字机气泡——流式期间 `textContent` 纯文本展示（防 XSS 注入），`finalize()` 时再用 marked + DOMPurify 渲染 markdown 并附 TTS 按钮
+- **sendMessageStream(url, body, onSessionId, onDelta)**：fetch POST（body 带 `stream:true`）→ `resp.body.getReader()` 循环 read → 字节按 `\n\n` 切事件（pending 保留跨 chunk 尾巴，与后端 SseParser 同构）→ parse `data:` 行 → `[DONE]` 停止。**Content-Type 非 text/event-stream 时自动降级**走旧 `response.json()` 逻辑（RAG/403 错误响应）
+
+### test_sse 单元测试
+
+`AIApps/ChatServer/tests/test_sse.cpp`（注意放在 tests/ 而非 src/，避开 CMake GLOB）——10 组场景 31 断言：跨回调半截 JSON、[DONE]、全量 JSON 回退、CRLF 分隔、容错（缺字段/空 delta/非法 JSON/注释行）、usage 解析、flush 尾巴、首块空白等待、转义字符。编译运行：`g++ -std=c++17 -I ../include -I ../../../HttpServer/include -o test_sse test_sse.cpp ../src/AIUtil/SseParser.cpp && ./test_sse`。
+
+---
+
+## 十九、SSE 二期优化：线程池 / 背压 / 心跳 / 取消传播
+
+### 二期要解决的两个问题
+
+**问题 1：同步透传占线程**。一期实现里 Handler 在 Muduo IO 线程内同步执行 curl 到 [DONE]，一条 SSE 流钉死一个 IO 线程（共 4 个）——4 个用户同时聊天，同 EventLoop 上的其他连接（登录/历史/静态页）全部排队卡死。这违背 Muduo "IO 线程只做轻量 I/O" 的设计哲学。
+
+**问题 2：无心跳被代理掐断**。TTFT 之前（LLM 思考 10-30s、MCP 工具执行 5s+）SSE 流上一个字节都没有；nginx `proxy_read_timeout` 默认 60s、云 SLB/CDN 常 30-60s，超时即掐连，前端表现为打字机卡死后报错。
+
+### SseChannel.h
+
+`include/AIUtil/SseChannel.h` —— 一条 SSE 流的发送通道，解决三个问题：
+
+```cpp
+class SseChannel : public std::enable_shared_from_this<SseChannel> {
+    muduo::net::TcpConnectionPtr conn_;   // 持有连接（shared_ptr）
+    std::atomic<int64_t> lastSendMs_;     // 心跳基准
+    std::atomic<bool> clientGone_;
+};
+```
+
+1. **生命周期**：Handler 返回后 `onRequest` 的栈上 `HttpResponse` 就析构了，worker 线程不能持有 `resp*`——`make_shared<SseChannel>(conn)` 让 worker 持有 shared_ptr，连接活着通道就活着
+2. **断开检测**：`alive()` 即时反映客户端是否还在
+3. **背压**：`prepareSend()` 在每次发送前检查 `conn_->outputBuffer()->readableBytes() > 1MB` 则 sleep 10ms 循环等待——挡住 worker → curl 的 WriteCallback 跟着被挡 → 不再继续读 LLM 流 → TCP 窗口自然反压。**内存有界，生产快于消费时自动限速**
+4. **心跳触点**：`touch()/idleMs()` 供 Keepalive 判断；`sendPing()` 独立路径**不走背压**（仅 8 字节且在定时器线程调用，不能被 sleep 卡住）
+
+`close()` 发完 [DONE] 后 `conn->shutdown()`（muduo 排空发送缓冲后优雅断开）。
+
+### StreamWorkerPool.h / StreamWorkerPool.cpp
+
+`include/AIUtil/StreamWorkerPool.h` + `src/AIUtil/StreamWorkerPool.cpp` —— 经典线程池（单例）：`start(N)` 幂等启动、`submit(task)` 投递（未启动时自动 4 线程兜底）、workerLoop 阻塞取任务执行。**改造后 IO 线程只做“写 SSE 头 + 打包任务提交 + 立即 return”**（微秒级释放），整条 chat（curl 阻塞 + 增量回调 + 发送）在 worker 线程执行；`conn->send` 由 muduo 自动转移到连接所属 IO 线程，线程安全。
+
+### SseKeepalive.h / SseKeepalive.cpp
+
+`include/AIUtil/SseKeepalive.h` + `src/AIUtil/SseKeepalive.cpp` —— 心跳管理器（单例）：
+
+```cpp
+std::unordered_map<uint64_t, std::weak_ptr<SseChannel>> flows_;  // 注册表（weak 防悬挂）
+void registerFlow(shared_ptr<SseChannel>);    // Handler 创建流时
+void unregisterFlow(uint64_t id);             // worker 发完 [DONE] 后
+void onTimer();                               // 每 5s：清理死流 + 空闲>10s 补发 ": ping\n\n"
+```
+
+- SSE 规范中**冒号开头是注释行**，浏览器与 SseParser 均自动忽略——**前端零改动**
+- 用**主 loop 定时器**而非独立线程（`runEvery(5.0, ...)`），且不依赖 curl 进度回调——进度回调只在传输期间触发，盖不住 MCP “第 1 段结束 → 工具执行 → 第 2 段开始” 的间隙
+- weak_ptr 注册表：worker 异常退出没注销，下轮扫描 lock 失败自动清理
+
+### AIHelper 取消传播
+
+新增原子标志 `std::atomic<bool> m_abortRequested` + `requestAbort()/abortRequested()`。**取消链路**：
+
+```
+用户关页面 → TCP 断 → SseChannel::sendEvent 返回 false
+  → Handler 的回调 lambda 调 helper->requestAbort()
+  → WriteCallback 检查 abortRequested() 返回 0
+  → libcurl 视为写错误立刻中止下载（CURLE_WRITE_ERROR，标准玩法）
+  → chat 的 catch 分支：abortRequested 时直接收尾（不降级重发——重发也没人收）
+```
+
+**白捡的收益**：客户端断开后不再傻乎乎读完整个 LLM 流，**直接省下剩余 token 消耗**。
+
+### ChatServer 装配
+
+`ChatServer.cpp` 的 `initialize()` 末尾：
+
+```cpp
+// 1) SSE 工作线程池：流式任务从 Muduo IO 线程剥离
+StreamWorkerPool::instance().start(8);
+
+// 2) 心跳保活：主 loop 每 5s 扫描，空闲 >10s 补发 ": ping"
+httpServer_.getLoop()->runEvery(5.0, []() {
+    SseKeepalive::instance().onTimer();
+});
+```
+
+### 二期架构总览
+
+```
+IO 线程（4 个，只做轻活）              SSE 工作线程池（8 个 std::thread）
+  Handler::handle                        worker:
+    ├─ 登录/权限校验（fail-closed）        ├─ AIHelper::chat → curl（阻塞随你占）
+    ├─ make_shared<SseChannel>            └─ delta → channel->sendEvent
+    ├─ 写 SSE 头 + 注册心跳                     │ 背压：outputBuffer>1MB → sleep
+    ├─ submit(task) ──→ 任务队列 ─────→         │ 断开：sendEvent 失败 → requestAbort
+    └─ 立即 return                            │      → WriteCallback 返回 0 → curl 中止
+                                        主 loop 每 5s：空闲>10s 的流补发 ": ping"
 ```
 
 ---
