@@ -18,3 +18,4 @@ http_server
 .DS_Store
 *.swp
 *.swo
+test_sse
