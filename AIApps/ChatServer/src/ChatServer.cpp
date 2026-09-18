@@ -64,6 +64,121 @@ void ChatServer::initChatMessage() {
     std::cout << "initChatMessage success ! " << std::endl;
 }
 
+namespace {
+
+// ONNX 模型路径：原先硬编码在 AIUploadSendHandler 里（带 todo 注释），
+// 换机器就得改代码重编。这里收口成一处，并允许用环境变量覆盖。
+const std::string& imageModelPath() {
+    static const std::string path = [] {
+        const char* p = std::getenv("IMAGE_MODEL_PATH");
+        return (p && *p) ? std::string(p)
+                         : std::string("/root/models/mobilenetv2/mobilenetv2-7.onnx");
+    }();
+    return path;
+}
+
+} // namespace
+
+// ================= 共享状态访问器 =================
+// 读路径：只查不建。注意用 find 而不是 operator[]——
+// operator[] 在 key 不存在时会插入默认值，那是写操作，在 shared_lock 下是未定义行为。
+std::shared_ptr<AIHelper> ChatServer::findChatHelper(int userId,
+    const std::string& sessionId) const
+{
+    std::shared_lock<std::shared_mutex> lock(mutexForChatInformation);
+    auto itUser = chatInformation.find(userId);
+    if (itUser == chatInformation.end()) return nullptr;
+    auto itSession = itUser->second.find(sessionId);
+    if (itSession == itUser->second.end()) return nullptr;
+    return itSession->second;
+}
+
+// 写路径：双重检查。/chat/send 的绝大多数请求都是"往已有会话里继续发"，
+// 会在第一段 shared_lock 就命中返回，真正需要独占写锁的只有会话的第一条消息。
+std::shared_ptr<AIHelper> ChatServer::getOrCreateChatHelper(int userId,
+    const std::string& sessionId, bool* created)
+{
+    if (created) *created = false;
+
+    // 第一次检查：共享锁，多线程可同时进来
+    {
+        std::shared_lock<std::shared_mutex> lock(mutexForChatInformation);
+        auto itUser = chatInformation.find(userId);
+        if (itUser != chatInformation.end()) {
+            auto itSession = itUser->second.find(sessionId);
+            if (itSession != itUser->second.end()) return itSession->second;
+        }
+    }
+
+    // 第二次检查：升级为独占锁后必须重查一遍。
+    // 因为释放共享锁到拿到独占锁之间存在空窗，别的线程可能已经把它建好了，
+    // 少了这次重查就会出现"两个线程各建一个 AIHelper，后者覆盖前者"，
+    // 表现为用户上下文凭空丢失。
+    std::unique_lock<std::shared_mutex> lock(mutexForChatInformation);
+    auto& userSessions = chatInformation[userId];
+    auto itSession = userSessions.find(sessionId);
+    if (itSession != userSessions.end()) return itSession->second;
+
+    auto helper = std::make_shared<AIHelper>();
+    userSessions.emplace(sessionId, helper);
+    if (created) *created = true;
+    return helper;
+}
+
+// 图像识别器：和上面同构，但多一个关键处理——模型加载放在锁外。
+std::shared_ptr<ImageRecognizer> ChatServer::getOrCreateRecognizer(int userId)
+{
+    {
+        std::shared_lock<std::shared_mutex> lock(mutexForImageRecognizerMap);
+        auto it = ImageRecognizerMap.find(userId);
+        if (it != ImageRecognizerMap.end()) return it->second;
+    }
+
+    // 构造函数要读 ONNX 权重 + 建推理 session，是百毫秒级的重操作。
+    // 如果放在写锁里做，这段时间所有用户的图像请求全被挡住，
+    // 等于把"首次加载"的代价摊给了全服。所以先在锁外造好。
+    auto fresh = std::make_shared<ImageRecognizer>(imageModelPath());
+
+    std::unique_lock<std::shared_mutex> lock(mutexForImageRecognizerMap);
+    // 代价是可能白造一个：两个线程同时首次上传时都会各造一份。
+    // emplace 只有先到者成功，后到者拿到已存在的那个，自己造的 fresh 随即析构。
+    // 用"偶尔多造一份"换"不阻塞全服"，这笔买卖划算。
+    auto result = ImageRecognizerMap.emplace(userId, fresh);
+    return result.first->second;
+}
+
+void ChatServer::appendSessionId(int userId, const std::string& sessionId)
+{
+    std::unique_lock<std::shared_mutex> lock(mutexForSessionsId);
+    sessionsIdsMap[userId].push_back(sessionId);
+}
+
+std::vector<std::string> ChatServer::listSessionIds(int userId) const
+{
+    std::shared_lock<std::shared_mutex> lock(mutexForSessionsId);
+    auto it = sessionsIdsMap.find(userId);
+    if (it == sessionsIdsMap.end()) return {};
+    return it->second;   // 拷贝一份出去，调用方拿去拼 JSON 时不再持锁
+}
+
+// 登录抢占：判断"是否已在线"和"标记为在线"必须是一个原子步骤。
+// 原实现先在锁外 find 判断、再进锁写入，两步之间有空窗：
+// 同一账号并发登录时两个线程都会判定"不在线"，双双登录成功，防重复登录形同虚设。
+bool ChatServer::tryMarkOnline(int userId)
+{
+    std::unique_lock<std::shared_mutex> lock(mutexForOnlineUsers_);
+    auto it = onlineUsers_.find(userId);
+    if (it != onlineUsers_.end() && it->second) return false;   // 已在线
+    onlineUsers_[userId] = true;
+    return true;
+}
+
+void ChatServer::markOffline(int userId)
+{
+    std::unique_lock<std::shared_mutex> lock(mutexForOnlineUsers_);
+    onlineUsers_.erase(userId);
+}
+
 // 从 MySQL 恢复历史聊天记录
 // 按 ts 时间戳升序读取 chat_message 表，重建 chatInformation 二级 map 与 AIHelper
 void ChatServer::readDataFromMySQL() {
@@ -100,16 +215,12 @@ void ChatServer::readDataFromMySQL() {
             continue; 
         }
 
-        auto& userSessions = chatInformation[user_id];
-
-        std::shared_ptr<AIHelper> helper;
-        auto itSession = userSessions.find(session_id);
-        if (itSession == userSessions.end()) {
-            helper = std::make_shared<AIHelper>();
-            userSessions[session_id] = helper;
-			sessionsIdsMap[user_id].push_back(session_id);
-        } else {
-            helper = itSession->second;
+        // 走统一访问器：启动期虽是单线程，但让恢复路径和运行期共用同一套加锁语义，
+        // 避免以后有人在这里直接动裸 map 而绕过锁。
+        bool created = false;
+        auto helper = getOrCreateChatHelper(static_cast<int>(user_id), session_id, &created);
+        if (created) {
+            appendSessionId(static_cast<int>(user_id), session_id);
         }
 
         helper->restoreMessage(content, ts);

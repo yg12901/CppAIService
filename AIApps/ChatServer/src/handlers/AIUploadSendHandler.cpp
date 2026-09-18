@@ -39,18 +39,9 @@ void AIUploadSendHandler::handle(const http::HttpRequest& req, http::HttpRespons
             return;
         }
 
-        std::shared_ptr<ImageRecognizer> ImageRecognizerPtr;
-        {
-            std::lock_guard<std::mutex> lock(server_->mutexForImageRecognizerMap);
-            if (server_->ImageRecognizerMap.find(userId) == server_->ImageRecognizerMap.end()) {
-
-                server_->ImageRecognizerMap.emplace(
-                    userId,
-                    std::make_shared<ImageRecognizer>("/root/models/mobilenetv2/mobilenetv2-7.onnx")  //todo:Remove hard coding
-                );
-            }
-            ImageRecognizerPtr = server_->ImageRecognizerMap[userId];
-        }
+        // 访问器内部：shared_lock 快路径命中已加载的模型；首次加载时在锁外构造，
+        // 不会让一个用户的冷启动把全服的图像请求挡住。模型路径已外置到环境变量。
+        std::shared_ptr<ImageRecognizer> ImageRecognizerPtr = server_->getOrCreateRecognizer(userId);
 
         auto body = req.getBody();
         std::string filename;
@@ -68,15 +59,16 @@ void AIUploadSendHandler::handle(const http::HttpRequest& req, http::HttpRespons
         std::string decodedData = base64_decode(imageBase64);
         std::vector<uchar> imgData(decodedData.begin(), decodedData.end());
 
-        std::string className = ImageRecognizerPtr->PredictFromBuffer(imgData);
+        ImagePrediction prediction = ImageRecognizerPtr->PredictDetailFromBuffer(imgData);
 
 
         json successResp;
         successResp["success"] = "ok";
         successResp["filename"] = filename;
-        successResp["class_name"] = className;
-
-        successResp["confidence"] = 0.95; // todo:Calculating true confidence
+        successResp["class_name"] = prediction.label;
+        // 真实的 softmax 概率，不再是写死的 0.95
+        successResp["confidence"] = prediction.confidence;
+        successResp["class_id"] = prediction.classId;
 
 
         std::string successBody = successResp.dump(4);

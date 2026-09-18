@@ -36,21 +36,13 @@ void ChatHistoryHandler::handle(const http::HttpRequest& req, http::HttpResponse
 
         std::vector<std::pair<std::string, long long>> messages;
 
-        {
-            std::shared_ptr<AIHelper> AIHelperPtr;
-            std::lock_guard<std::mutex> lock(server_->mutexForChatInformation);
-
-            auto& userSessions = server_->chatInformation[userId];
-
-            if (userSessions.find(sessionId) == userSessions.end()) {
-
-                userSessions.emplace( 
-                    sessionId,
-                    std::make_shared<AIHelper>()
-                );
-            }
-            AIHelperPtr= userSessions[sessionId];
-            messages= AIHelperPtr->GetMessages();
+        // 拉历史是纯读，走 shared_lock 快路径，多个用户可以同时拉。
+        // 原实现用 operator[]，查一个不存在的 sessionId 会顺手建一个空 AIHelper
+        // 塞进 map —— 既是"读接口偷偷写数据"，也让伪造 sessionId 能无限撑大内存。
+        // 现在查不到就直接返回空历史，对前端的表现完全一致。
+        auto AIHelperPtr = server_->findChatHelper(userId, sessionId);
+        if (AIHelperPtr) {
+            messages = AIHelperPtr->GetMessages();
         }
 
 

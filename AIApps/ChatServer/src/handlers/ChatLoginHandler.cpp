@@ -44,13 +44,12 @@ void ChatLoginHandler::handle(const http::HttpRequest& req, http::HttpResponse* 
                 session->setValue("canImage", canImage ? "true" : "false");
                 session->setValue("canTts",   canTts   ? "true" : "false");
             }
-            if (server_->onlineUsers_.find(userId) == server_->onlineUsers_.end() || server_->onlineUsers_[userId] == false)
+            // 原实现是"锁外判断是否在线 → 锁内标记在线"，两步之间有空窗：
+            // 同一账号并发登录时，两个线程都读到"不在线"，于是双双登录成功，
+            // 防重复登录形同虚设。现在把判断和标记收进访问器的同一个写锁里，
+            // 保证只有一个线程能抢到上线名额。
+            if (server_->tryMarkOnline(userId))
             {
-                {
-                    std::lock_guard<std::mutex> lock(server_->mutexForOnlineUsers_);
-                    server_->onlineUsers_[userId] = true;
-                }
-
                 json successResp;
                 successResp["success"] = true;
                 successResp["userId"] = userId;
@@ -68,7 +67,7 @@ void ChatLoginHandler::handle(const http::HttpRequest& req, http::HttpResponse* 
 
                 json failureResp;
                 failureResp["success"] = false;
-                failureResp["error"] = "˺ط¼";
+                failureResp["error"] = "该账号已在别处登录";
                 std::string failureBody = failureResp.dump(4);
 
                 resp->setStatusLine(req.getVersion(), http::HttpResponse::k403Forbidden, "Forbidden");

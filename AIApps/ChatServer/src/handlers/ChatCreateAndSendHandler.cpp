@@ -63,22 +63,17 @@ void ChatCreateAndSendHandler::handle(const http::HttpRequest& req, http::HttpRe
         std::cout<<"ɵsessionIdΪ "<<sessionId<<std::endl;
 
 
-        std::shared_ptr<AIHelper> AIHelperPtr;
-        {
-            std::lock_guard<std::mutex> lock(server_->mutexForChatInformation);
-
-            auto& userSessions = server_->chatInformation[userId];
-
-            if (userSessions.find(sessionId) == userSessions.end()) {
-
-                userSessions.emplace( 
-                    sessionId,
-                    std::make_shared<AIHelper>()
-                );
-                server_->sessionsIdsMap[userId].push_back(sessionId);
-            }
-            AIHelperPtr= userSessions[sessionId];
-
+        // 原实现在这里犯了两个错：
+        //  ① sessionsIdsMap 是在 mutexForChatInformation 的保护下写的，
+        //     而读它的 /chat/sessions 用的却是 mutexForSessionsId —— 两把不同的锁
+        //     保护同一份数据，等于没保护，是实打实的数据竞争。
+        //  ② 想顺手合并成一次加锁，反而埋下了跨表嵌套持锁的隐患。
+        // 现在拆成两段串行加锁：各自锁各自的表，全程不嵌套，既修了竞争也免了死锁。
+        bool created = false;
+        std::shared_ptr<AIHelper> AIHelperPtr =
+            server_->getOrCreateChatHelper(userId, sessionId, &created);
+        if (created) {
+            server_->appendSessionId(userId, sessionId);
         }
 
         // 流式响应模式：请求要求流式且模型支持（RAG 等自动降级非流式）

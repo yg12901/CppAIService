@@ -55,7 +55,6 @@ public:
     std::vector<std::pair<std::string, long long>> GetMessages();
 
 private:
-    std::string escapeString(const std::string& input);
     //加入到mysql的接口（提供加入到线程池的接口，线程池做异步mysql更新操作）
     //todo:
     void pushMessageToMysql(int userId, const std::string& userName, bool is_user, const std::string& userInput, long long ms, std::string sessionId);

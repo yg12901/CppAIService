@@ -26,12 +26,9 @@ void ChatSessionsHandler::handle(const http::HttpRequest& req, http::HttpRespons
         int userId = std::stoi(session->getValue("userId"));
         std::string username = session->getValue("username");
         
-        std::vector<std::string> sessions;  
-
-        {
-            std::lock_guard<std::mutex> lock(server_->mutexForSessionsId);
-            sessions = server_->sessionsIdsMap[userId]; 
-        }
+        // 纯读，shared_lock 并行；访问器内部用 find 而非 operator[]，
+        // 不会因为查一个没建过会话的用户就往 map 里插空 vector。
+        std::vector<std::string> sessions = server_->listSessionIds(userId);
 
         json successResp;
         successResp["success"] = true;
@@ -41,7 +38,7 @@ void ChatSessionsHandler::handle(const http::HttpRequest& req, http::HttpRespons
         for (auto sid : sessions) {
             json s;
             s["sessionId"] = sid;
-            s["name"] = "Ự " + sid;
+            s["name"] = "会话 " + sid;
             sessionArray.push_back(s);
         }
         successResp["sessions"] = sessionArray;

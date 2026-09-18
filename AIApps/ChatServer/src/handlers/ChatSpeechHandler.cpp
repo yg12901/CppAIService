@@ -56,13 +56,13 @@ void ChatSpeechHandler::handle(const http::HttpRequest& req, http::HttpResponse*
         if (!secretEnv) throw std::runtime_error("BAIDU_CLIENT_SECRET not found!");
         if (!idEnv) throw std::runtime_error("BAIDU_CLIENT_ID not found!");
 
-        ::string clientSecret(secretEnv);
+        std::string clientSecret(secretEnv);
         std::string clientId(idEnv);
 
         AISpeechProcessor speechProcessor(clientId, clientSecret);
         
 
-        std::string stdspeechUrl = speechProcessor.synthesize(text,
+        std::string speechUrl = speechProcessor.synthesize(text,
                                                            "mp3-16k", 
                                                            "zh",  
                                                             5, 

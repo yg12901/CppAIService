@@ -101,8 +101,9 @@ std::string AIHelper::chat(int userId,std::string userName, std::string sessionI
         return answer.empty() ? "[Error] 无法解析响应" : answer;
     }
     //说明支持MCP
-    AIConfig config;
-    config.loadFromFile("../AIApps/ChatServer/resource/config.json");
+    // 单例取配置：原来每次对话都要开一次文件、解析一次 JSON、编译两个正则，
+    // 这些开销全压在用户等待的链路上，而配置内容从头到尾没变过。
+    const AIConfig& config = AIConfig::instance();
     std::string tempUserQuestion =config.buildPrompt(userQuestion);
     std::cout << "tempUserQuestion is " << tempUserQuestion << std::endl;
     messages.push_back({ tempUserQuestion, 0 });
@@ -121,16 +122,38 @@ std::string AIHelper::chat(int userId,std::string userName, std::string sessionI
 
     // 情况1：AI 不调用工具
     if (!call.isToolCall) {
+        std::string plainAnswer = aiResult;
+
+        // 区分两种"不调工具"：
+        //  a) rejectReason 为空 —— 模型本来就是正常文本作答，直接用。
+        //  b) rejectReason 非空 —— 模型想调工具但没过格式校验（编了个不存在的工具名、
+        //     参数缺一半）。此时 aiResult 是一坨内部协议 JSON，原样返回等于把
+        //     提示词协议泄露给用户。重发一次不带工具提示词的纯净问题，让它好好说人话。
+        if (!call.rejectReason.empty()) {
+            std::cout << "[MCP] fallback to plain answer, reason=" << call.rejectReason << std::endl;
+            messages.push_back({ userQuestion, 0 });
+            try {
+                std::string retry = strategy->parseResponse(executeCurl(strategy->buildRequest(messages)));
+                if (!retry.empty()) plainAnswer = retry;
+            }
+            catch (const std::exception& e) {
+                // 重试失败不影响主流程，沿用第一段的原始输出
+                std::cout << "[MCP] plain retry failed: " << e.what() << std::endl;
+            }
+            messages.pop_back();
+        }
+
         addMessage(userId, userName, true, userQuestion, sessionId);
-        addMessage(userId, userName, false, aiResult, sessionId);
+        addMessage(userId, userName, false, plainAnswer, sessionId);
 
         std::cout << "No tools required" << std::endl;
-        return aiResult;
+        return plainAnswer;
     }
 
     // 情况 2：AI 要调用工具
     json toolResult;
-    AIToolRegistry registry;
+    // 注册表只读，构造一次复用：每次请求 new 一张 hash 表纯属浪费
+    static const AIToolRegistry registry;
 
     try {
         toolResult = registry.invoke(call.toolName, call.args);
@@ -324,53 +347,34 @@ void AIHelper::resetStreamState() {
     m_streamDeltaCount = 0;
 }
 
-std::string AIHelper::escapeString(const std::string& input) {
-    std::string output;
-    output.reserve(input.size() * 2);
-    for (char c : input) {
-        switch (c) {
-            case '\\': output += "\\\\"; break;
-            case '\'': output += "\\\'"; break;
-            case '\"': output += "\\\""; break;
-            case '\n': output += "\\n"; break;
-            case '\r': output += "\\r"; break;
-            case '\t': output += "\\t"; break;
-            default:   output += c; break;
-        }
-    }
-    return output;
-}
-
-
 void AIHelper::pushMessageToMysql(int userId, const std::string& userName, bool is_user, const std::string& userInput,long long ms, std::string sessionId) {
-    // std::string sql = "INSERT INTO chat_message (id, username, is_user, content, ts) VALUES ("
-    //     + std::to_string(userId) + ", "  // 这里用 userId 作为 id，或者你自己生成
-    //     + "'" + userName + "', "
-    //     + std::to_string(is_user ? 1 : 0) + ", "
-    //     + "'" + userInput + "', "
-    //     + std::to_string(ms) + ")";
-    std::string safeUserName = escapeString(userName);
-    std::string safeUserInput = escapeString(userInput);
+    // 改造前这里是手工拼 SQL 字符串 + 自己写 escapeString 转义，有两个问题：
+    //  ① sessionId 直接拼进来，连转义都没做（因为它被当成数字列）。
+    //     它来自请求体，客户端传 "1,0,'x',0)-- " 之类就能改写整条语句。
+    //  ② 自研转义永远追不上边界情况（字符集、\0、注释符），这是公认的错误做法。
+    // 现在队列里传的是结构化 JSON，SQL 语句在消费端写死、参数走预处理绑定，
+    // 用户输入从此没有任何机会被当成 SQL 解析。
+    //
+    // 顺带的好处：消息自描述了，排查时能直接看懂队列里堆的是什么，
+    // 而不是一坨拼好的 SQL。
 
     // 用量列：仅 AI 回复行（is_user=0）携带本轮 token 消耗，用户消息行填 0
     int promptTokens     = is_user ? 0 : m_lastPromptTokens;
     int completionTokens = is_user ? 0 : m_lastCompletionTokens;
 
-    std::string sql = "INSERT INTO chat_message "
-        "(id, username, session_id, is_user, content, ts, model, prompt_tokens, completion_tokens) VALUES ("
-        + std::to_string(userId) + ", "
-        + "'" + safeUserName + "', "
-        + sessionId + ", "
-        + std::to_string(is_user ? 1 : 0) + ", "
-        + "'" + safeUserInput + "', "
-        + std::to_string(ms) + ", "
-        + "'" + m_curModel + "', "
-        + std::to_string(promptTokens) + ", "
-        + std::to_string(completionTokens) + ")";
+    json payload;
+    payload["type"]              = "chat_message";   // 预留：以后可复用同一队列投递别的写操作
+    payload["id"]                = userId;
+    payload["username"]          = userName;
+    payload["session_id"]        = sessionId;
+    payload["is_user"]           = is_user ? 1 : 0;
+    payload["content"]           = userInput;
+    payload["ts"]                = ms;
+    payload["model"]             = m_curModel;
+    payload["prompt_tokens"]     = promptTokens;
+    payload["completion_tokens"] = completionTokens;
 
     //改成消息队列异步执行mysql操作，用于流量削峰与解耦逻辑
-    //mysqlUtil_.executeUpdate(sql);
-
-    MQManager::instance().publish("sql_queue", sql);
+    MQManager::instance().publish("sql_queue", payload.dump());
 }
 

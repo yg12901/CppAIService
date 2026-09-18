@@ -29,10 +29,7 @@ void ChatLogoutHandler::handle(const http::HttpRequest& req, http::HttpResponse*
 
         json parsed = json::parse(req.getBody());
 
-        {   
-            std::lock_guard<std::mutex> lock(server_->mutexForOnlineUsers_);
-            server_->onlineUsers_.erase(userId);
-        }
+        server_->markOffline(userId);
 
 
         json response;

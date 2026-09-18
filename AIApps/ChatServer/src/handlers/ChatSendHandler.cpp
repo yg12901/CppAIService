@@ -60,21 +60,9 @@ void ChatSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* r
         }
 
 
-        std::shared_ptr<AIHelper> AIHelperPtr;
-        {
-            std::lock_guard<std::mutex> lock(server_->mutexForChatInformation);
-
-            auto& userSessions = server_->chatInformation[userId];
-
-            if (userSessions.find(sessionId) == userSessions.end()) {
-
-                userSessions.emplace( 
-                    sessionId,
-                    std::make_shared<AIHelper>()
-                );
-            }
-            AIHelperPtr= userSessions[sessionId];
-        }
+        // 继续已有会话是常态，会在访问器的 shared_lock 快路径直接命中，多请求并行。
+        // 只有"会话的第一条消息"才会走到 unique_lock。
+        std::shared_ptr<AIHelper> AIHelperPtr = server_->getOrCreateChatHelper(userId, sessionId);
         
 
         // 流式响应模式：请求要求流式且模型支持（RAG 等自动降级非流式）
