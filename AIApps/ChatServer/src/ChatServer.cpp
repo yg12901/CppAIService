@@ -223,7 +223,7 @@ void ChatServer::readDataFromMySQL() {
             appendSessionId(static_cast<int>(user_id), session_id);
         }
 
-        helper->restoreMessage(content, ts);
+        helper->restoreMessage(content, ts, is_user != 0);
     }
 
     std::cout << "readDataFromMySQL finished" << std::endl;

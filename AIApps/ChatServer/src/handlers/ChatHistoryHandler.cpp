@@ -34,7 +34,7 @@ void ChatHistoryHandler::handle(const http::HttpRequest& req, http::HttpResponse
             if (j.contains("sessionId")) sessionId = j["sessionId"];
         }
 
-        std::vector<std::pair<std::string, long long>> messages;
+        std::vector<ChatMessage> messages;
 
         // 拉历史是纯读，走 shared_lock 快路径，多个用户可以同时拉。
         // 原实现用 operator[]，查一个不存在的 sessionId 会顺手建一个空 AIHelper
@@ -50,10 +50,11 @@ void ChatHistoryHandler::handle(const http::HttpRequest& req, http::HttpResponse
         successResp["success"] = true;
         successResp["history"] = json::array();
 
-        for (size_t i = 0; i < messages.size(); ++i) {
+        for (const auto& m : messages) {
             json msgJson;
-            msgJson["is_user"] = (i % 2 == 0);
-            msgJson["content"] = messages[i].first;
+            msgJson["role"] = m.role;
+            msgJson["is_user"] = (m.role == "user");
+            msgJson["content"] = m.content;
             successResp["history"].push_back(msgJson);
         }
 

@@ -9,6 +9,17 @@
 #include "../../../../HttpServer/include/utils/JsonUtil.h"
 
 
+// 一条对话消息。role 写在数据里，不再靠 vector 下标奇偶猜测。
+// 取值约定与 OpenAI 兼容接口一致：user / assistant / system。
+struct ChatMessage {
+    std::string role;
+    std::string content;
+    long long   timestamp{0};
+};
+
+inline const char* roleFromIsUser(bool is_user) {
+    return is_user ? "user" : "assistant";
+}
 
 /**
  * AIStrategy - 策略模式基类
@@ -27,7 +38,7 @@ public:
     virtual std::string getModel() const = 0;
 
 
-    virtual json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const = 0;
+    virtual json buildRequest(const std::vector<ChatMessage>& messages) const = 0;
 
 
     virtual std::string parseResponse(const json& response) const = 0;
@@ -55,7 +66,7 @@ public:
     std::string getApiKey() const override;
     std::string getModel() const override;
 
-    json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const override;
+    json buildRequest(const std::vector<ChatMessage>& messages) const override;
     std::string parseResponse(const json& response) const override;
 
     bool isStreamSupported() const override { return true; }   // 百炼支持流式
@@ -78,7 +89,7 @@ public:
     std::string getApiKey() const override;
     std::string getModel() const override;
 
-    json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const override;
+    json buildRequest(const std::vector<ChatMessage>& messages) const override;
     std::string parseResponse(const json& response) const override;
 
     bool isStreamSupported() const override { return true; }   // 豆包支持流式
@@ -102,7 +113,7 @@ public:
     std::string getApiKey() const override;
     std::string getModel() const override;
 
-    json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const override;
+    json buildRequest(const std::vector<ChatMessage>& messages) const override;
     std::string parseResponse(const json& response) const override;
 
 private:
@@ -124,7 +135,7 @@ public:
     std::string getApiKey() const override;
     std::string getModel() const override;
 
-    json buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const override;
+    json buildRequest(const std::vector<ChatMessage>& messages) const override;
     std::string parseResponse(const json& response) const override;
 
     bool isStreamSupported() const override { return true; }   // MCP 第二段可流式

@@ -4,6 +4,21 @@
 // 4 个策略实现：阿里百炼(qwen-plus) / 豆包(doubao-seed) / 阿里RAG(嵌套 JSON) / 阿里MCP(工具调用)
 // 底部 4 个 static StrategyRegister 在程序启动时自动注册到工厂
 
+namespace {
+
+json messagesToArray(const std::vector<ChatMessage>& messages) {
+    json msgArray = json::array();
+    for (const auto& m : messages) {
+        json msg;
+        msg["role"] = m.role;
+        msg["content"] = m.content;
+        msgArray.push_back(std::move(msg));
+    }
+    return msgArray;
+}
+
+} // namespace
+
 std::string AliyunStrategy::getApiUrl() const {
     return "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 }
@@ -18,23 +33,10 @@ std::string AliyunStrategy::getModel() const {
 }
 
 
-json AliyunStrategy::buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const {
+json AliyunStrategy::buildRequest(const std::vector<ChatMessage>& messages) const {
     json payload;
     payload["model"] = getModel();
-    json msgArray = json::array();
-
-    for (size_t i = 0; i < messages.size(); ++i) {
-        json msg;
-        if (i % 2 == 0) {
-            msg["role"] = "user";
-        }
-        else {
-            msg["role"] = "assistant";
-        }
-        msg["content"] = messages[i].first;
-        msgArray.push_back(msg);
-    }
-    payload["messages"] = msgArray;
+    payload["messages"] = messagesToArray(messages);
     return payload;
 }
 
@@ -61,23 +63,10 @@ std::string DouBaoStrategy::getModel() const {
 }
 
 
-json DouBaoStrategy::buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const {
+json DouBaoStrategy::buildRequest(const std::vector<ChatMessage>& messages) const {
     json payload;
     payload["model"] = getModel();
-    json msgArray = json::array();
-
-    for (size_t i = 0; i < messages.size(); ++i) {
-        json msg;
-        if (i % 2 == 0) {
-            msg["role"] = "user";
-        }
-        else {
-            msg["role"] = "assistant";
-        }
-        msg["content"] = messages[i].first;
-        msgArray.push_back(msg);
-    }
-    payload["messages"] = msgArray;
+    payload["messages"] = messagesToArray(messages);
     return payload;
 }
 
@@ -108,16 +97,9 @@ std::string AliyunRAGStrategy::getModel() const {
 }
 
 
-json AliyunRAGStrategy::buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const {
+json AliyunRAGStrategy::buildRequest(const std::vector<ChatMessage>& messages) const {
     json payload;
-    json msgArray = json::array();
-    for (size_t i = 0; i < messages.size(); ++i) {
-        json msg;
-        msg["role"] = (i % 2 == 0 ? "user" : "assistant");
-        msg["content"] = messages[i].first;
-        msgArray.push_back(msg);
-    }
-    payload["input"]["messages"] = msgArray;
+    payload["input"]["messages"] = messagesToArray(messages);
     payload["parameters"] = json::object(); 
     return payload;
 }
@@ -146,23 +128,10 @@ std::string AliyunMcpStrategy::getModel() const {
 }
 
 
-json AliyunMcpStrategy::buildRequest(const std::vector<std::pair<std::string, long long>>& messages) const {
+json AliyunMcpStrategy::buildRequest(const std::vector<ChatMessage>& messages) const {
     json payload;
     payload["model"] = getModel();
-    json msgArray = json::array();
-
-    for (size_t i = 0; i < messages.size(); ++i) {
-        json msg;
-        if (i % 2 == 0) {
-            msg["role"] = "user";
-        }
-        else {
-            msg["role"] = "assistant";
-        }
-        msg["content"] = messages[i].first;
-        msgArray.push_back(msg);
-    }
-    payload["messages"] = msgArray;
+    payload["messages"] = messagesToArray(messages);
     return payload;
 }
 

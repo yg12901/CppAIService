@@ -26,13 +26,13 @@ void AIHelper::addMessage(int userId,const std::string& userName, bool is_user,c
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    messages.push_back({ userInput,ms });
+    messages.push_back({ roleFromIsUser(is_user), userInput, ms });
     //消息队列异步入库
     pushMessageToMysql(userId, userName, is_user, userInput, ms, sessionId);
 }
 
-void AIHelper::restoreMessage(const std::string& userInput,long long ms) {
-    messages.push_back({ userInput,ms });
+void AIHelper::restoreMessage(const std::string& userInput,long long ms, bool is_user) {
+    messages.push_back({ roleFromIsUser(is_user), userInput, ms });
 }
 
 
@@ -106,7 +106,7 @@ std::string AIHelper::chat(int userId,std::string userName, std::string sessionI
     const AIConfig& config = AIConfig::instance();
     std::string tempUserQuestion =config.buildPrompt(userQuestion);
     std::cout << "tempUserQuestion is " << tempUserQuestion << std::endl;
-    messages.push_back({ tempUserQuestion, 0 });
+    messages.push_back({ "user", tempUserQuestion, 0 });
 
     // 第 1 段：模型决策是否调工具——必须全量（要等完整 JSON 才能阅卷），不开流式
     resetStreamState();
@@ -131,7 +131,7 @@ std::string AIHelper::chat(int userId,std::string userName, std::string sessionI
         //     提示词协议泄露给用户。重发一次不带工具提示词的纯净问题，让它好好说人话。
         if (!call.rejectReason.empty()) {
             std::cout << "[MCP] fallback to plain answer, reason=" << call.rejectReason << std::endl;
-            messages.push_back({ userQuestion, 0 });
+            messages.push_back({ "user", userQuestion, 0 });
             try {
                 std::string retry = strategy->parseResponse(executeCurl(strategy->buildRequest(messages)));
                 if (!retry.empty()) plainAnswer = retry;
@@ -174,7 +174,7 @@ std::string AIHelper::chat(int userId,std::string userName, std::string sessionI
     std::string secondPrompt = config.buildToolResultPrompt(userQuestion, call.toolName, call.args, toolResult);
 
     std::cout << "secondPrompt is " << secondPrompt << std::endl;
-    messages.push_back({ secondPrompt, 0 });
+    messages.push_back({ "user", secondPrompt, 0 });
 
     std::string finalAnswer;
     json secondReq = strategy->buildRequest(messages);
@@ -221,7 +221,7 @@ json AIHelper::request(const json& payload) {
     return executeCurl(payload);
 }
 
-std::vector<std::pair<std::string, long long>> AIHelper::GetMessages() {
+std::vector<ChatMessage> AIHelper::GetMessages() {
     return this->messages;
 }
 

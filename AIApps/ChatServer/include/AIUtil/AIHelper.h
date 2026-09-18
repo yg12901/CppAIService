@@ -30,8 +30,8 @@ public:
 
     // 添加一条消息
     void addMessage(int userId, const std::string& userName, bool is_user, const std::string& userInput, std::string sessionId);
-    // 恢复一条消息
-    void restoreMessage(const std::string& userInput, long long ms);
+    // 从数据库恢复一条消息；is_user 转成 role 写进结构体，不再丢弃
+    void restoreMessage(const std::string& userInput, long long ms, bool is_user);
 
     // 发送聊天消息，返回AI的响应内容（完整答案，流式时为增量拼接结果）
     // stream=true 时：模型支持且已设置回调则走 SSE 流式，边收边推增量
@@ -52,7 +52,7 @@ public:
     // 可选：发送自定义请求体
     json request(const json& payload);
 
-    std::vector<std::pair<std::string, long long>> GetMessages();
+    std::vector<ChatMessage> GetMessages();
 
 private:
     //加入到mysql的接口（提供加入到线程池的接口，线程池做异步mysql更新操作）
@@ -89,10 +89,9 @@ private:
     */
     std::shared_ptr<AIStrategy> strategy;
 
-    //一个用户针对一个AIHelper，messages存放用户的历史对话
-    //偶数下标代表用户的信息，奇数下标是ai返回的内容
-    //后者代表时间戳
-    std::vector<std::pair<std::string, long long>> messages;
+    //一个用户针对一个AIHelper，messages 存放用户的历史对话。
+    // role 写在每条 ChatMessage 里（user / assistant / system），不靠下标奇偶猜测。
+    std::vector<ChatMessage> messages;
 
     // 用量统计：最近一次 chat 的 token 消耗（MCP 两段式会累加两段）
     int m_lastPromptTokens = 0;
