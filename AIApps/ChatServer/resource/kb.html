@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>知识库文档上传</title>
+    <style>
+        body {
+            font-family: "Microsoft YaHei", Arial, sans-serif;
+            background: linear-gradient(135deg, #1f1c2c, #928dab);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            color: #fff;
+        }
+        .top-bar {
+            padding: 12px 20px;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.2);
+        }
+        .back-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            background: #00c3ff;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .hint {
+            font-size: 13px;
+            color: #ddd;
+        }
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: rgba(0,0,0,0.3);
+        }
+        .message {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.5;
+            word-wrap: break-word;
+        }
+        .user {
+            background: #00c3ff;
+            color: white;
+            align-self: flex-end;
+        }
+        .assistant {
+            background: rgba(255,255,255,0.9);
+            color: #111;
+            align-self: flex-start;
+        }
+        .input-box {
+            display: flex;
+            padding: 12px 20px;
+            background: rgba(0, 0, 0, 0.5);
+            border-top: 1px solid rgba(255,255,255,0.2);
+            gap: 12px;
+        }
+        input[type="file"] {
+            flex: 1;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            padding: 6px 10px;
+            background: rgba(255,255,255,0.1);
+            color: #fff;
+        }
+        button {
+            padding: 0 20px;
+            border: none;
+            border-radius: 8px;
+            background: #00c3ff;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <button class="back-btn" onclick="window.location.href='/menu'">← 返回</button>
+        <div class="hint">文档进入<strong>共享</strong>知识库。索引完成后，所有人在聊天里选「百炼RAG」都能问到。不是识图。</div>
+    </div>
+    <div class="chat-container" id="log"></div>
+    <form class="input-box" id="form">
+        <input type="file" id="file-input" accept=".pdf,.doc,.docx,.wps,.ppt,.pptx,.xls,.xlsx,.md,.txt,.epub,.mobi" required>
+        <button type="submit">上传并同步</button>
+    </form>
+    <script>
+        const log = document.getElementById('log');
+        const form = document.getElementById('form');
+        const fileInput = document.getElementById('file-input');
+
+        function append(role, text) {
+            const div = document.createElement('div');
+            div.className = 'message ' + role;
+            div.innerHTML = '<b>' + (role === 'user' ? '你' : '系统') + ':</b> ' + text;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        async function pollJob(jobId) {
+            for (let i = 0; i < 24; i++) {
+                await new Promise(r => setTimeout(r, 5000));
+                try {
+                    const res = await fetch('/kb/job-status', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ jobId })
+                    });
+                    const data = await res.json();
+                    const st = data.status || '';
+                    append('assistant', '索引任务 ' + jobId + ' 状态：' + (st || JSON.stringify(data)));
+                    if (st === 'COMPLETED') {
+                        append('assistant', '索引完成。去聊天页选「百炼RAG」提问即可。');
+                        return;
+                    }
+                    if (st === 'FAILED') {
+                        append('assistant', '[失败] ' + (data.message || '索引任务失败'));
+                        return;
+                    }
+                } catch (e) {
+                    append('assistant', '[错误] 查询任务失败: ' + e.message);
+                    return;
+                }
+            }
+            append('assistant', '仍在构建中。可稍后在聊天里试，或去百炼控制台看知识库任务。');
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!fileInput.files.length) return;
+            const file = fileInput.files[0];
+            if (file.size > 12 * 1024 * 1024) {
+                append('assistant', '[错误] 文件超过 12MB');
+                return;
+            }
+            append('user', '上传: ' + file.name + ' (' + Math.round(file.size / 1024) + ' KB)');
+            const reader = new FileReader();
+            reader.onload = async function (ev) {
+                const base64Data = String(ev.target.result).split(',')[1] || '';
+                try {
+                    const response = await fetch('/kb/upload', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ filename: file.name, file: base64Data })
+                    });
+                    const data = await response.json();
+                    if (!response.ok || data.status === 'error') {
+                        append('assistant', '[错误] ' + (data.message || '上传失败'));
+                        return;
+                    }
+                    append('assistant', (data.message || '已提交') +
+                        '<br>fileId: ' + data.fileId + '<br>jobId: ' + data.jobId);
+                    if (data.jobId) pollJob(data.jobId);
+                } catch (err) {
+                    append('assistant', '[错误] ' + err.message);
+                }
+                fileInput.value = '';
+            };
+            reader.readAsDataURL(file);
+        });
+    </script>
+</body>
+</html>

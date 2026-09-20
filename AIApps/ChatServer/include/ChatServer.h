@@ -35,6 +35,9 @@ class ChatHistoryHandler;
 class AIMenuHandler;
 class AIUploadHandler;
 class AIUploadSendHandler;
+class KbUploadHandler;
+class KbUploadSendHandler;
+class KbJobStatusHandler;
 
 
 class ChatCreateAndSendHandler;
@@ -64,6 +67,9 @@ private:
 	friend class AIMenuHandler;
 	friend class AIUploadHandler;
 	friend class AIUploadSendHandler;
+	friend class KbUploadHandler;
+	friend class KbUploadSendHandler;
+	friend class KbJobStatusHandler;
 	friend class ChatHistoryHandler;
 
 	friend class ChatCreateAndSendHandler;

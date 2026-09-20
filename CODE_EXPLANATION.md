@@ -1,6 +1,8 @@
 # CppAIService 项目完整代码解析
 
-> 本文档对 `/data/workspace/CppAIService` 项目的所有源文件进行逐行解析，包含原理说明、关键代码注释以及用法示例。
+> **已过时。** 以仓库现状为准请看 [`docs/代码精度.md`](docs/代码精度.md)。本文仍按早期实现写（奇偶 role、裸 SQL、没有 SSE / 读写锁 / `/kb` 灌库），不要对着本文背代码。
+
+本文档对 `/data/workspace/CppAIService` 项目的所有源文件进行逐行解析，包含原理说明、关键代码注释以及用法示例。
 
 ---
 

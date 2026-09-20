@@ -7,6 +7,9 @@
 #include"../include/handlers/AIMenuHandler.h"
 #include"../include/handlers/AIUploadSendHandler.h"
 #include"../include/handlers/AIUploadHandler.h"
+#include"../include/handlers/KbUploadHandler.h"
+#include"../include/handlers/KbUploadSendHandler.h"
+#include"../include/handlers/KbJobStatusHandler.h"
 #include"../include/handlers/ChatHistoryHandler.h"
 
 
@@ -307,6 +310,10 @@ void ChatServer::initializeRouter() {
     httpServer_.Get("/upload", std::make_shared<AIUploadHandler>(this));
    
     httpServer_.Post("/upload/send", std::make_shared<AIUploadSendHandler>(this));
+
+    httpServer_.Get("/kb", std::make_shared<KbUploadHandler>(this));
+    httpServer_.Post("/kb/upload", std::make_shared<KbUploadSendHandler>(this));
+    httpServer_.Post("/kb/job-status", std::make_shared<KbJobStatusHandler>(this));
     
     httpServer_.Post("/chat/history", std::make_shared<ChatHistoryHandler>(this));
 

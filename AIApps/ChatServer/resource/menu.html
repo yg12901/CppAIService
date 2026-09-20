@@ -161,6 +161,7 @@
         <div class="menu-border"></div>
         <div class="menu-option" id="chat-service">[1] 进入 AI 聊天助手</div>
         <div class="menu-option" id="image-service">[2] 进入 AI 图像识别助手</div>
+        <div class="menu-option" id="kb-service">[3] 上传知识库文档（共享 RAG）</div>
         <div class="menu-option" id="logout">[0] 退出登录</div>
     </div>
 
@@ -195,6 +196,7 @@
 
         document.getElementById('chat-service').addEventListener('click', () => loadService('/chat', '进入AI聊天服务异常！'));
         document.getElementById('image-service').addEventListener('click', () => loadService('/upload', '进入AI图像识别服务异常！'));
+        document.getElementById('kb-service').addEventListener('click', () => loadService('/kb', '进入知识库上传异常！'));
         document.getElementById('logout').addEventListener('click', () => {
             const userId = sessionStorage.getItem('userId');
             fetch('/user/logout', {

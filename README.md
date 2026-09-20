@@ -1,12 +1,13 @@
 # AI Agent 平台
 
-基于 C++ 开发的智能 AI Agent 后端服务，集成多模型对话、图像识别、工具调用与语音合成能力，支持多轮会话记忆与异步任务调度。
+基于 C++ 开发的智能 AI Agent 后端服务，集成多模型对话、共享知识库灌库、图像识别、工具调用与语音合成能力，支持多轮会话记忆与异步任务调度。
 
 ## 核心能力
 
 - **多模型适配（Strategy + Factory）**：通过策略模式与工厂模式统一抽象多厂商 API 差异，一键切换模型，新增模型仅需新增一个策略类并注册一行代码
 - **轻量级 MCP 工具调用**：参考 Model Context Protocol 思想，自研两段式工具调用机制，第一段由模型决策是否调工具，第二段基于工具结果二次推理生成最终答案
 - **图像识别**：基于 ONNX Runtime + OpenCV 部署 MobileNetV2 分类模型，实现端到端推理流程
+- **共享 RAG 灌库**：平台上传文档，经百炼数据面追加进同一份知识库；聊天选「百炼RAG」检索仍在云上
 - **语音合成（TTS）**：集成百度语音合成 API，支持创建任务→轮询→回传 URL 的异步流程
 - **异步消息队列**：RabbitMQ 承载持久化写库，前台同步写内存、异步入库，避免主线程阻塞
 - **多会话管理**：通过 `unordered_map<userId, map<sessionId, AIHelper>>` 实现多用户多会话隔离
@@ -34,7 +35,7 @@
 │   │   ├── AIUtil/      # AI 策略、工具、语音、图像
 │   │   └── handlers/    # HTTP 请求处理器
 │   ├── src/             # 业务实现
-│   └── resource/        # 配置、前端页面
+│   └── resource/        # 配置、前端页面（含 kb.html 知识库上传）
 └── CMakeLists.txt       # 构建配置
 ```
 
@@ -58,7 +59,10 @@ export DASHSCOPE_API_KEY="sk-xxx"      # 阿里百炼
 export DOUBAO_API_KEY="xxx"            # 火山豆包
 export BAIDU_CLIENT_ID="xxx"           # 百度语音
 export BAIDU_CLIENT_SECRET="xxx"       # 百度语音
-export Knowledge_Base_ID="xxx"         # 百炼 RAG 知识库
+export Knowledge_Base_ID="xxx"         # 百炼 RAG 应用 ID（聊天选「百炼RAG」时用）
+export BAILIAN_WORKSPACE_ID="llm-xxx"  # 业务空间 ID（控制台左上角）
+export BAILIAN_INDEX_ID="xxx"          # 知识库 IndexId（灌库用，不是应用 ID）
+# export BAILIAN_CATEGORY_ID="default" # 可选，默认 default
 ```
 
 ### 编译运行
