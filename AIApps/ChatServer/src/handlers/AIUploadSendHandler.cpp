@@ -25,6 +25,7 @@ void AIUploadSendHandler::handle(const http::HttpRequest& req, http::HttpRespons
         }
 
         int userId = std::stoi(session->getValue("userId"));
+        std::string username = session->getValue("username");
 
         // 功能权限校验：canImage=false 的用户禁止使用图像识别（fail-closed）
         if (session->getValue("canImage") != "true") {
@@ -61,6 +62,15 @@ void AIUploadSendHandler::handle(const http::HttpRequest& req, http::HttpRespons
 
         ImagePrediction prediction = ImageRecognizerPtr->PredictDetailFromBuffer(imgData);
 
+        // 推理仍在本次请求里同步完成（用户等的是这一次结果）。
+        // 落库走 sql_queue：和聊天记录同一条异步写路径，不在 IO 线程里 INSERT。
+        // publish 失败不应把已经算出来的分类结果变成 400。
+        try {
+            server_->pushImageResult(userId, username, filename, prediction);
+        }
+        catch (const std::exception& e) {
+            LOG_ERROR << "publish image_result failed: " << e.what();
+        }
 
         json successResp;
         successResp["success"] = "ok";

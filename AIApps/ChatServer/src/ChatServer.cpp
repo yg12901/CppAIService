@@ -21,6 +21,7 @@
 #include "../../../HttpServer/include/http/HttpRequest.h"
 #include "../../../HttpServer/include/http/HttpResponse.h"
 #include "../../../HttpServer/include/http/HttpServer.h"
+#include <chrono>
 
 
 
@@ -38,6 +39,7 @@ ChatServer::ChatServer(int port,
 void ChatServer::initialize() {
     std::cout << "ChatServer initialize start  ! " << std::endl;
 	http::MysqlUtil::init("tcp://127.0.0.1:3306", "root", "123456", "ChatHttpServer", 5);
+	ensureImageResultTable();
 
     initializeSession();
 
@@ -145,6 +147,50 @@ std::shared_ptr<ImageRecognizer> ChatServer::getOrCreateRecognizer(int userId)
     // 用"偶尔多造一份"换"不阻塞全服"，这笔买卖划算。
     auto result = ImageRecognizerMap.emplace(userId, fresh);
     return result.first->second;
+}
+
+void ChatServer::ensureImageResultTable() {
+    // 启动时建表：手动跑 init_v3.sql 也可以，这里兜底避免忘了执行导致消费端一直 INSERT 失败。
+    static const std::string kDdl =
+        "CREATE TABLE IF NOT EXISTS image_result ("
+        "  pk BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "  user_id INT NOT NULL,"
+        "  username VARCHAR(50) NOT NULL DEFAULT '',"
+        "  filename VARCHAR(255) NOT NULL DEFAULT '',"
+        "  class_name VARCHAR(256) NOT NULL DEFAULT '',"
+        "  class_id INT NOT NULL DEFAULT -1,"
+        "  confidence FLOAT NOT NULL DEFAULT 0,"
+        "  model VARCHAR(64) NOT NULL DEFAULT '',"
+        "  ts BIGINT NOT NULL,"
+        "  KEY idx_image_result_user_ts (user_id, ts)"
+        ")";
+    try {
+        mysqlUtil_.executeUpdate(kDdl);
+    }
+    catch (const std::exception& e) {
+        std::cerr << "ensureImageResultTable failed: " << e.what() << std::endl;
+    }
+}
+
+void ChatServer::pushImageResult(int userId, const std::string& username,
+    const std::string& filename, const ImagePrediction& prediction)
+{
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+
+    json payload;
+    payload["type"]       = "image_result";
+    payload["id"]         = userId;
+    payload["username"]   = username;
+    payload["filename"]   = filename;
+    payload["class_name"] = prediction.label;
+    payload["class_id"]   = prediction.classId;
+    payload["confidence"] = prediction.confidence;
+    payload["model"]      = "mobilenetv2";
+    payload["ts"]         = ms;
+
+    MQManager::instance().publish("sql_queue", payload.dump());
 }
 
 void ChatServer::appendSessionId(int userId, const std::string& sessionId)

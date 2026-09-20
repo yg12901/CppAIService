@@ -75,7 +75,7 @@ private:
 	void initializeSession();
 	void initializeRouter();
 	void initializeMiddleware();
-	
+	void ensureImageResultTable();
 
 	void readDataFromMySQL();
 
@@ -98,6 +98,11 @@ private:
 	// 图像识别器：构造要把 ONNX 模型从磁盘读进来（百毫秒级），
 	// 绝不能占着写锁做，因此先在锁外构造好再抢锁插入。
 	std::shared_ptr<ImageRecognizer> getOrCreateRecognizer(int userId);
+
+	// 识图结果异步落库：组 JSON 丢进 sql_queue，不在 IO 线程里同步 INSERT。
+	// 只存分类结果（类名/置信度），不存原图，避免把 base64 大字段塞进队列和表。
+	void pushImageResult(int userId, const std::string& username,
+		const std::string& filename, const ImagePrediction& prediction);
 
 	// 会话 ID 列表：登记走 unique_lock，列举走 shared_lock
 	void appendSessionId(int userId, const std::string& sessionId);
