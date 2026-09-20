@@ -42,6 +42,7 @@ file(GLOB_RECURSE HTTP_SERVER_SRC
 file(GLOB_RECURSE GOMOKU_SERVER_SRC
     "${PROJECT_SOURCE_DIR}/AIApps/ChatServer/src/*.cpp"
 )
+list(REMOVE_ITEM GOMOKU_SERVER_SRC "${PROJECT_SOURCE_DIR}/AIApps/ChatServer/src/main.cpp")
 
 # 主程序文件
 set(MAIN_SRC "${PROJECT_SOURCE_DIR}/AIApps/ChatServer/src/main.cpp")
