@@ -45,9 +45,19 @@ public:
 
     bool isMCPModel = false;
 
-    // 是否支持 SSE 流式输出（OpenAI 兼容 delta 格式）
-    // 默认 false；百炼/豆包/MCP 三家返回 true，RAG 接口格式不同本期不支持
+    // 是否支持 SSE 流式输出。默认 false；四家对话策略都 override 为 true。
     virtual bool isStreamSupported() const { return false; }
+
+    // 流式时改请求体。默认 OpenAI 兼容：顶层 stream=true。
+    // RAG 应用 API 不认这个字段，子类改 parameters.incremental_output。
+    virtual void prepareStreamRequest(json& payload) const {
+        payload["stream"] = true;
+    }
+
+    // 流式时追加的 HTTP 头。RAG 需要 X-DashScope-SSE: enable。
+    virtual std::vector<std::string> extraHttpHeaders(bool /*stream*/) const {
+        return {};
+    }
 
 };
 
@@ -115,6 +125,10 @@ public:
 
     json buildRequest(const std::vector<ChatMessage>& messages) const override;
     std::string parseResponse(const json& response) const override;
+
+    bool isStreamSupported() const override { return true; }   // 应用 API 走 SSE
+    void prepareStreamRequest(json& payload) const override;
+    std::vector<std::string> extraHttpHeaders(bool stream) const override;
 
 private:
     std::string apiKey_;

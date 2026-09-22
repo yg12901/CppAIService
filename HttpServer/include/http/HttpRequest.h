@@ -51,6 +51,9 @@ public:
     void addHeader(const char* start, const char* colon, const char* end);
     std::string getHeader(const std::string& field) const;
 
+    // 媒体类型是否为 application/json（忽略大小写和 ; charset= 等参数）
+    bool isJsonContentType() const;
+
     const std::map<std::string, std::string>& headers() const
     { return headers_; }
 

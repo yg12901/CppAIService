@@ -109,7 +109,24 @@ std::string AliyunRAGStrategy::parseResponse(const json& response) const {
     if (response.contains("output") && response["output"].contains("text")) {
         return response["output"]["text"];
     }
+    // 流式收尾时 executeCurl 会拼一份 OpenAI 形状的 fake，两边都能拆
+    if (response.contains("choices") && !response["choices"].empty()) {
+        return response["choices"][0]["message"].value("content", std::string());
+    }
     return {};
+}
+
+void AliyunRAGStrategy::prepareStreamRequest(json& payload) const {
+    // 应用 completion 不认顶层 stream:true。增量靠 parameters + SSE 头。
+    if (!payload.contains("parameters") || !payload["parameters"].is_object()) {
+        payload["parameters"] = json::object();
+    }
+    payload["parameters"]["incremental_output"] = true;
+}
+
+std::vector<std::string> AliyunRAGStrategy::extraHttpHeaders(bool stream) const {
+    if (!stream) return {};
+    return {"X-DashScope-SSE: enable"};
 }
 
 

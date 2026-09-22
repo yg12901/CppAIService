@@ -6,8 +6,8 @@
 void ChatLoginHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
     
-    auto contentType = req.getHeader("Content-Type");
-    if (contentType.empty() || contentType != "application/json" || req.getBody().empty())
+    auto contentTypeOk = req.isJsonContentType();
+    if (!contentTypeOk || req.getBody().empty())
     {
         LOG_INFO << "content" << req.getBody();
         resp->setStatusLine(req.getVersion(), http::HttpResponse::k400BadRequest, "Bad Request");

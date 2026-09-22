@@ -4,18 +4,7 @@
 // clear 会话内容 → destroySession 从 storage 删除 → erase onlineUsers_ 释放登录态
 void ChatLogoutHandler::handle(const http::HttpRequest& req, http::HttpResponse* resp)
 {
-    auto contentType = req.getHeader("Content-Type");
-    if (contentType.empty() || contentType != "application/json" || req.getBody().empty())
-    {
-        resp->setStatusLine(req.getVersion(), http::HttpResponse::k400BadRequest, "Bad Request");
-        resp->setCloseConnection(true);
-        resp->setContentType("application/json");
-        resp->setContentLength(0);
-        resp->setBody("");
-        return;
-    }
-
-
+    // 身份在 Cookie 里，body 不用。以前还卡 Content-Type 且要求非空 JSON，纯属复制登录逻辑。
     try
     {
 
@@ -26,8 +15,6 @@ void ChatLogoutHandler::handle(const http::HttpRequest& req, http::HttpResponse*
         session->clear();
 
         server_->getSessionManager()->destroySession(session->getId());
-
-        json parsed = json::parse(req.getBody());
 
         server_->markOffline(userId);
 

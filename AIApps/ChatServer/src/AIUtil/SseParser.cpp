@@ -25,8 +25,10 @@ bool SseParser::feed(const std::string& chunk, std::vector<std::string>& deltas)
         }
         if (i >= pending.size()) return true;      // 还没有效字符，继续等下一块
         formatChecked = true;
-        if (pending.compare(i, 5, "data:") != 0) {
-            plainJson = true;                       // 全量 JSON（服务端忽略 stream）
+        // 百炼应用 SSE 常以 id: / event: / :HTTP_STATUS 开头，不一定第一行就是 data:
+        // 全量 JSON 以 '{' 起头。其余按 SSE 继续切事件。
+        if (pending[i] == '{') {
+            plainJson = true;
             return false;
         }
     }
@@ -74,23 +76,59 @@ void SseParser::handleEvent(const std::string& event, std::vector<std::string>& 
 
     if (data == "[DONE]") { done = true; return; }
 
-    // OpenAI 兼容增量：choices[0].delta.content（可能缺失/为空，容错）
     try {
         json j = json::parse(data);
+        bool gotOpenAiDelta = false;
         if (j.contains("choices") && j["choices"].is_array() && !j["choices"].empty()) {
             const auto& c = j["choices"][0];
             if (c.contains("delta") && c["delta"].contains("content")) {
                 const auto& content = c["delta"]["content"];
                 if (content.is_string()) {
                     std::string s = content.get<std::string>();
-                    if (!s.empty()) deltas.push_back(std::move(s));
+                    if (!s.empty()) {
+                        deltas.push_back(std::move(s));
+                        gotOpenAiDelta = true;
+                    }
                 }
             }
         }
-        // 部分服务在最后一帧带 usage（容错累加）
-        if (j.contains("usage")) {
-            usagePrompt += j["usage"].value("prompt_tokens", 0);
-            usageCompletion += j["usage"].value("completion_tokens", 0);
+        // 百炼应用 API：output.text。incremental_output=true 时是增量；
+        // false 时是累积全文，用 lastOutputText 算出新增后缀，避免重复推。
+        if (!gotOpenAiDelta && j.contains("output") && j["output"].contains("text")
+            && j["output"]["text"].is_string()) {
+            std::string text = j["output"]["text"].get<std::string>();
+            if (!text.empty()) {
+                if (lastOutputText.empty()) {
+                    deltas.push_back(text);
+                    lastOutputText = text;
+                } else if (text.size() > lastOutputText.size()
+                           && text.compare(0, lastOutputText.size(), lastOutputText) == 0) {
+                    deltas.push_back(text.substr(lastOutputText.size()));
+                    lastOutputText = std::move(text);
+                } else if (text != lastOutputText) {
+                    deltas.push_back(text);
+                    lastOutputText += text;
+                }
+            }
+            if (j["output"].contains("finish_reason") && j["output"]["finish_reason"].is_string()) {
+                const std::string reason = j["output"]["finish_reason"].get<std::string>();
+                if (!reason.empty() && reason != "null") done = true;
+            }
+        }
+        if (j.contains("usage") && j["usage"].is_object()) {
+            const auto& u = j["usage"];
+            if (u.contains("models") && u["models"].is_array()) {
+                int in = 0, out = 0;
+                for (const auto& m : u["models"]) {
+                    in += m.value("input_tokens", 0);
+                    out += m.value("output_tokens", 0);
+                }
+                usagePrompt = in;
+                usageCompletion = out;
+            } else {
+                usagePrompt += u.value("prompt_tokens", 0);
+                usageCompletion += u.value("completion_tokens", 0);
+            }
         }
     } catch (...) {
         // 无法解析的事件（心跳注释等）直接忽略

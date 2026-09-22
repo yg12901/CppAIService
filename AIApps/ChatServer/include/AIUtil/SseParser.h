@@ -18,6 +18,7 @@ struct SseParser {
     bool plainJson = false;     // true = 服务端返回全量 JSON（未走流式）
     int  usagePrompt = 0;       // 最后事件可能携带的 usage（容错解析）
     int  usageCompletion = 0;
+    std::string lastOutputText; // RAG 应用 API：已吐出的 output.text（兼容累积/增量）
 
     // 喂入一段新数据；deltas 输出本次解析出的增量文本
     // 返回 false 表示检测到非 SSE 响应（全量 JSON），调用方应停止流式处理

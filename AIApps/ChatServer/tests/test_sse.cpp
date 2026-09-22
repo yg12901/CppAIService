@@ -118,6 +118,34 @@ int main() {
         CHECK(d[0] == "a\"b\\c");
     }
 
+    // ---- 11. 百炼应用 SSE：id/event 开头 + output.text 增量 ----
+    {
+        SseParser p;
+        std::vector<std::string> d;
+        CHECK(p.feed("id:1\nevent:result\n:HTTP_STATUS/200\n"
+                     "data: {\"output\":{\"text\":\"你\",\"finish_reason\":\"null\"}}\n\n", d));
+        CHECK(!p.plainJson);
+        CHECK(d.size() == 1 && d[0] == "你");
+        d.clear();
+        p.feed("data: {\"output\":{\"text\":\"好\",\"finish_reason\":\"stop\"},"
+               "\"usage\":{\"models\":[{\"input_tokens\":12,\"output_tokens\":2}]}}\n\n", d);
+        CHECK(d.size() == 1 && d[0] == "好");
+        CHECK(p.done);
+        CHECK(p.usagePrompt == 12 && p.usageCompletion == 2);
+        CHECK(p.lastOutputText == "你好");
+    }
+
+    // ---- 12. 百炼应用 SSE：output.text 累积全文，只推新增后缀 ----
+    {
+        SseParser p;
+        std::vector<std::string> d;
+        p.feed("data: {\"output\":{\"text\":\"北\"}}\n\n", d);
+        p.feed("data: {\"output\":{\"text\":\"北京\"}}\n\n", d);
+        p.feed("data: {\"output\":{\"text\":\"北京天气\"}}\n\n", d);
+        CHECK(d.size() == 3);
+        CHECK(d[0] == "北" && d[1] == "京" && d[2] == "天气");
+    }
+
     std::cout << (g_fail == 0 ? "ALL PASS" : "HAS FAILURES")
               << " (pass=" << g_pass << " fail=" << g_fail << ")" << std::endl;
     return g_fail == 0 ? 0 : 1;

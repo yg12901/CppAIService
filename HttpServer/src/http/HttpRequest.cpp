@@ -1,5 +1,7 @@
 #include "../../include/http/HttpRequest.h"
 
+#include <cctype>
+
 namespace http
 {
 
@@ -118,6 +120,20 @@ void HttpRequest::addHeader(const char *start, const char *colon, const char *en
         value.resize(value.size() - 1);
     }
     headers_[key] = value;
+}
+
+bool HttpRequest::isJsonContentType() const
+{
+    std::string v = getHeader("Content-Type");
+    size_t i = 0;
+    while (i < v.size() && (v[i] == ' ' || v[i] == '\t')) ++i;
+    size_t semi = v.find(';', i);
+    std::string media = (semi == std::string::npos) ? v.substr(i) : v.substr(i, semi - i);
+    while (!media.empty() && (media.back() == ' ' || media.back() == '\t')) media.pop_back();
+    for (char& c : media) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return media == "application/json";
 }
 
 std::string HttpRequest::getHeader(const std::string &field) const

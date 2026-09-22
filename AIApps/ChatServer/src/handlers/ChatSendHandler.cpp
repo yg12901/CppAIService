@@ -65,7 +65,7 @@ void ChatSendHandler::handle(const http::HttpRequest& req, http::HttpResponse* r
         std::shared_ptr<AIHelper> AIHelperPtr = server_->getOrCreateChatHelper(userId, sessionId);
         
 
-        // 流式响应模式：请求要求流式且模型支持（RAG 等自动降级非流式）
+        // 流式响应模式：请求要求流式且当前策略支持（不支持则降级整包 JSON）
         // 登录/权限校验已在上方完成（401/403 走标准 JSON 错误响应）
         if (stream && AIHelperPtr->isStreamSupported()) {
             auto conn = resp->connection();

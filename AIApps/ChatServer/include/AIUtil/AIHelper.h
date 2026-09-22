@@ -60,7 +60,8 @@ private:
     void pushMessageToMysql(int userId, const std::string& userName, bool is_user, const std::string& userInput, long long ms, std::string sessionId);
 
     // 内部方法：执行curl请求，返回原始JSON（流式时返回由增量拼成的标准形状响应）
-    json executeCurl(const json& payload);
+    // stream=true：按当前策略改请求体/头（OpenAI 的 stream:true，或 RAG 的 SSE 头）
+    json executeCurl(const json& payload, bool stream = false);
 
     // curl 回调上下文：累积原始响应 + 触发流式解析
     struct CurlCtx {

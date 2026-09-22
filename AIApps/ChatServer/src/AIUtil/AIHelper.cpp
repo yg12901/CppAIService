@@ -67,12 +67,10 @@ std::string AIHelper::chat(int userId,std::string userName, std::string sessionI
 
         std::string answer;
         if (useStream) {
-            // ---- 流式路径 ----
+            // ---- 流式路径：协议细节（stream:true / SSE 头）收口在策略里 ----
             resetStreamState();
-            json streamPayload = payload;
-            streamPayload["stream"] = true;
             try {
-                json response = executeCurl(streamPayload);
+                json response = executeCurl(payload, true);
                 answer = strategy->parseResponse(response);
             } catch (const std::exception& e) {
                 if (m_abortRequested) {
@@ -181,10 +179,8 @@ std::string AIHelper::chat(int userId,std::string userName, std::string sessionI
     if (useStream) {
         // 第 2 段：拿工具结果组织最终答案——开流式，增量往外推
         resetStreamState();
-        json streamPayload = secondReq;
-        streamPayload["stream"] = true;
         try {
-            json secondResp = executeCurl(streamPayload);
+            json secondResp = executeCurl(secondReq, true);
             finalAnswer = strategy->parseResponse(secondResp);
         } catch (const std::exception& e) {
             if (m_abortRequested) {
@@ -227,9 +223,9 @@ std::vector<ChatMessage> AIHelper::GetMessages() {
 
 
 // 内部方法：执行 curl 请求
-// 流式请求（payload 带 stream:true 且已设回调）时：边收边推增量，
-// 返回由增量拼成的标准形状响应（choices[0].message.content），parseResponse 无感
-json AIHelper::executeCurl(const json& payload) {
+// stream=true 时：按策略改请求体/头，边收边推增量；
+// 返回由增量拼成的响应（同时带 choices 和 output.text，parseResponse 无感）
+json AIHelper::executeCurl(const json& payload, bool stream) {
     CURL* curl = curl_easy_init();
     if (!curl) {
         throw std::runtime_error("Failed to initialize curl");
@@ -240,18 +236,28 @@ json AIHelper::executeCurl(const json& payload) {
     if (maskedKey.size() > 6) maskedKey = maskedKey.substr(0, 6) + "...";
     std::cout << "test " << strategy->getApiUrl() << ' ' << maskedKey << std::endl;
 
+    json body = payload;
+    if (stream) {
+        strategy->prepareStreamRequest(body);
+    }
+
     // 回调上下文：全量累积 + 可选流式解析
     CurlCtx ctx;
     ctx.self = this;
-    ctx.wantStream = payload.value("stream", false) && m_streamCallback != nullptr;
+    ctx.wantStream = stream && m_streamCallback != nullptr;
 
     struct curl_slist* headers = nullptr;
     std::string authHeader = "Authorization: Bearer " + strategy->getApiKey();
 
     headers = curl_slist_append(headers, authHeader.c_str());
     headers = curl_slist_append(headers, "Content-Type: application/json");
+    // extra 必须活过 curl_easy_perform：curl_slist 只存指针
+    const std::vector<std::string> extra = strategy->extraHttpHeaders(stream);
+    for (const auto& h : extra) {
+        headers = curl_slist_append(headers, h.c_str());
+    }
 
-    std::string payloadStr = payload.dump();
+    std::string payloadStr = body.dump();
 
 
     curl_easy_setopt(curl, CURLOPT_URL, strategy->getApiUrl().c_str());
@@ -284,6 +290,7 @@ json AIHelper::executeCurl(const json& payload) {
 
         json fake;
         fake["choices"] = json::array({ json{{"message", json{{"content", m_streamedAnswer}}}} });
+        fake["output"]["text"] = m_streamedAnswer;
         return fake;
     }
 
@@ -321,7 +328,7 @@ size_t AIHelper::WriteCallback(void* contents, size_t size, size_t nmemb, void* 
 }
 
 // WriteCallback 内部：喂 SSE 解析器，逐 delta 触发回调并记录 TTFT
-// 首块数据若不是 "data:" 开头则判定为全量 JSON（服务端忽略 stream），停止流式
+// 首块以 '{' 起头视为全量 JSON（服务端没走 SSE），停止流式
 void AIHelper::processStreamChunk(const std::string& chunk) {
     std::vector<std::string> deltas;
     if (!m_sse.feed(chunk, deltas)) {

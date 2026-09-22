@@ -76,7 +76,7 @@ void ChatCreateAndSendHandler::handle(const http::HttpRequest& req, http::HttpRe
             server_->appendSessionId(userId, sessionId);
         }
 
-        // 流式响应模式：请求要求流式且模型支持（RAG 等自动降级非流式）
+        // 流式响应模式：请求要求流式且当前策略支持（不支持则降级整包 JSON）
         // 新会话先以首条 SSE 事件回传 sessionId，前端据此保存会话
         if (stream && AIHelperPtr->isStreamSupported()) {
             auto conn = resp->connection();
